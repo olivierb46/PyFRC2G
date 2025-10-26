@@ -2,6 +2,8 @@
 
 Script python de conversion de règles firewall **PfSense** en graphique.
 
+![rules](./img/convert-rules-to-graph.png)
+
 ## 👋 Présentation
 
 Le script a été codé pour répondre à deux objectifs :
