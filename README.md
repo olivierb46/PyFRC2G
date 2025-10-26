@@ -46,6 +46,17 @@ PFS_URL = "https://pfs01.domaine.lan/api/v2/firewall/rules"
 PFS_TOKEN = "VOTRE_CLE_GENEREE_AVEC_PFSENSE_REST_API"
 ```
 
+Renseignez le nom de la passerelle à la ligne 171 du script :
+```Python
+(...)
+    for entry in entries:
+        writer.writerow({
+            "SOURCE": safe_value(entry.get("source"), "source"),
+            "PASSERELLE": "NOM_DE_LA_PASSERELLE/"+safe_value(entry.get("interface"), "interface"),
+            "ACTION": safe_value(entry.get("type")),
+(...)
+```
+
 Configurez ensuite vos interfaces, les réseaux, les adresses des interfaces et les ports dans le fichier **config.py**. C'est certainement récupérable depuis pfSense mais je suis allé au plus facile à mettre en place 😇.
 
 Exemple :
@@ -76,21 +87,9 @@ PORT_MAP = {
 }
 ```
 
-Renseignez le nom de la passerelle à la ligne 171 :
-```Python
-(...)
-    for entry in entries:
-        writer.writerow({
-            "SOURCE": safe_value(entry.get("source"), "source"),
-            "PASSERELLE": "NOM_DE_LA_PASSERELL/"+safe_value(entry.get("interface"), "interface"),
-            "ACTION": safe_value(entry.get("type")),
-(...)
-```
-
 ## 🚀 Utilisation
 
-Lancez le script **pyfrc2g.py**. Le script génèrera alors un fichier CSV qui sera parsé dans la foulée afin de générer un fichier *.gv* par interface présente sur pfSense puis de générer un rendu au format PNG.
-Ces fichiers sont nommés avec le nom de la passerelle et 
+Lancez le script **pyfrc2g.py**. Le script génèrera alors un fichier CSV qui sera parsé dans la foulée afin de générer un fichier *.gv* par interface présente sur pfSense puis de générer un rendu au format PNG. Ces fichiers sont nommés avec le nom de la passerelle et l'interface dans le répertoire **graphs**.
 
 Notes :
 * Lors de la récupération des hôtes de destination, l'API de pfSense ne permet pas de connaitre le réseau dans lequel se situe celui-ci. J'ai donc commenté mes hôtes de destination sur pfSense en renseignant dans quel VLAN était celui-ci.
