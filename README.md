@@ -19,7 +19,7 @@ Le script a été codé pour répondre à deux objectifs :
 * Génération des flux graphiques avec la bibliothèque python **Graphviz**.
 * Génération d'un fichier PDF A4 avec une page par interface.
 * Distinction entre un VLAN/réseau de destination et un hôte de destination.
-* Mapping des interfaces, des ports et des destnations.
+* Mapping des interfaces, des ports et des destinations.
 * Coloration pour les actions PASS et BLOCK.
 * Coloration pour les règles présentes mais désactivées (pfSense uniquement).
 * Export possible du fichier PDF généré dans la preuve associée sur **[CISO Assistant](https://intuitem.com/fr/ciso-assistant/)** sous forme de révision afin de conserver l'historique des fichiers poussés.
