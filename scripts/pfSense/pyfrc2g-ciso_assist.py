@@ -25,7 +25,10 @@ GRAPH_OUTPUT_DIR = "tmp/graphs_"+PASSERELLE
 # CISO Assistant
 CISO_URL = "https://<CISO_ASSISTANT_ADDRESS>"
 CISO_TOKEN = "<CISO_ASSISTANT_TOKEN>"
-CISO_EVIDENCE = f"{CISO_URL}/api/evidences/<EVIDENCE_ID>/upload/"
+CISO_EVIDENCE_PATH = f"{CISO_URL}/api/evidence-revisions/"
+CISO_FORLDER_ID = "<CISO_FORLDER_ID>"
+CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID>"
+
 
 def md5sum(path):
     md5 = hashlib.md5()
@@ -72,20 +75,34 @@ def normalize_ports(port_field):
         return "Any"
     return re.sub(r'\s+', '', port_field.strip()) or "Any"
 
-def export_to_ciso(url,token,fichier):
-    upload_url = url
+def export_to_ciso(url, token, folder, evidence, fichier):
     upload_headers = {
         'Authorization': f'Token {token}',
-        'accept': 'application/json',
-        'Content-Type': 'document',
-        'Content-Disposition': f'attachment; filename={fichier}'
+        'Accept': 'application/json',
     }
-    file_path = fichier
-    with open(file_path, 'rb') as file:
-        response = requests.post(upload_url, headers=upload_headers, data=file, verify=False)
-    if response.status_code == 200:
+    data = {
+        "is_published": True,
+        "observation": "Preuve générée automatiquement",
+        "folder": folder,
+        "evidence": evidence
+    }
+    # IMPORTANT : "attachment" doit correspondre au champ attendu par l'API
+    with open(fichier, 'rb') as file:
+        files = {
+            "attachment": (fichier.split("/")[-1], file, "application/pdf")
+        }
+        response = requests.post(
+            url,
+            headers=upload_headers,
+            data=data,
+            files=files,
+            verify=False
+        )
+    if response.status_code in (200, 201):
+        logging.info("Export vers Ciso réussi.")
         return True
     else:
+        logging.error(f"Échec : {response.status_code} -> {response.text}")
         return False
 
 def parse_csv_and_generate(csv_path, output_dir):
@@ -251,7 +268,7 @@ def parse_csv_and_generate(csv_path, output_dir):
     except Exception as e:
         print(f"⚠️ Erreur lors de la génération du PDF : {e}")
 
-    if not export_to_ciso(CISO_EVIDENCE, CISO_TOKEN, pdf_path):
+    if not export_to_ciso(CISO_EVIDENCE_PATH, CISO_TOKEN, CISO_FORLDER_ID, CISO_EVIDENCE_ID, pdf_path):
         logging.error("Échec de l'exportation dans Ciso.")
         return
 
