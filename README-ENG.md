@@ -43,7 +43,7 @@ Once the **pfSense REST API** package is installed, configure the listening inte
 
 3. Script configuration
 
-Download the **pyfrc2g.py** and **config.py** files corresponding to your gateway (pfSense or OPNSense).
+Download the **pyfrc2g.py**, **config.py** and **md5sum.txt** files corresponding to your gateway (pfSense or OPNSense).
 
 Configure the **URL** of your gateway and your **credentials** in the **pyfrc2g.py** file.
 
