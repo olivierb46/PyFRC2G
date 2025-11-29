@@ -164,7 +164,3 @@ CISO_EVIDENCE = f"{CISO_URL}/api/evidences/<EVIDENCE_ID>/upload/"
 * ~~Do the same for OPNSense.~~
 * ~~Send evidence to CISO Assistant~~
 * Retrieve timestamps and authors for rule creation/modification.
-
-.
-
-Retrieve timestamps and authors for rule creation/modification.
