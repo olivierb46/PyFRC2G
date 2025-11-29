@@ -135,7 +135,7 @@ NET_MAP = {
 
 Run the **pyfrc2g.py** script. It will generate a final PDF file (after creating several intermediate files which are deleted once execution finishes). Each page is named with the gateway and interface to make navigation easier.
 
-If no rule has been added or modified, the script does not regenerate the PDF (the script compares the md5sum between the previous CSV version and the current one).
+If no rule has been added or modified, the script does not regenerate the PDF (the script compares the md5sum between the previous CSV version and the current one). You can reset the `md5sum.txt` file with the command `echo > md5sum.txt`
 
 2. Usage with CISO Assistant
 
