@@ -7,7 +7,7 @@ import os
 import logging
 import glob
 import csv
-from config_en import INTERFACE_MAP, NET_MAP, ADDRESS_MAP, PORT_MAP
+from config import INTERFACE_MAP, NET_MAP, ADDRESS_MAP, PORT_MAP
 import hashlib
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
