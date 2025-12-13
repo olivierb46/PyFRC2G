@@ -1,166 +1,385 @@
-# PyFRC2G
+# PyFRC2G - Unified Firewall Rules to Graph Converter
 
-Python scripts to convert PfSense and OPNSense firewall rules into a graphical view of the flows.
+Unified Python package to convert **pfSense** and **OPNSense** firewall rules into graphical flow diagrams.
 
-![pfsense](./img/convert-rules-to-graph.png)
-![opnsense](./img/opnsense.png)
+![pfSense Example](./img/convert-rules-to-graph.png)
+![OPNSense Example](./img/opnsense.png)
 
 ## 👋 Overview
 
-This script was written to meet two objectives:
+PyFRC2G was designed to meet two main objectives:
 
-* Provide a global graphical view of firewall rules (a picture is worth a thousand words).
-* Provide evidence to meet IT security requirements defined in various compliance frameworks.
+* **Visual Documentation**: Provide a global graphical view of firewall rules (a picture is worth a thousand words)
+* **Compliance Evidence**: Provide evidence to meet IT security requirements defined in various compliance frameworks
 
 ## ⚡ Features
 
-* Script based on Python (developed and tested on GNU/Linux).
-* Uses pfSense's API provided by the pfSense REST API Package.
-* Uses OPNSense's built-in API.
-* Generates graphical flows with the Graphviz Python library.
-* Produces an A4 PDF file with one page per interface.
-* Distinguishes between a destination VLAN/network and a destination host.
-* Mapping of interfaces, ports, and destinations.
-* Color coding for PASS and BLOCK actions.
-* Color coding for rules that exist but are disabled (pfSense only).
-* Option to export the generated PDF to the associated evidence record in [CISO Assistant](https://intuitem.com/ciso-assistant/) as a revision to keep the history of uploaded files.
+### Core Features
+
+* **Unified Support**: Single package for both pfSense and OPNSense
+* **Automatic Interface Detection**: Auto-detects all available interfaces for OPNSense
+* **API-Based Alias Mapping**: Retrieves all aliases directly from firewall API (no config file needed)
+* **Per-Interface Output**: Generates separate CSV and PDF files for each interface
+* **Smart Change Detection**: Only regenerates graphs when rules have changed (MD5 comparison)
+* **Modular Architecture**: Clean, maintainable, and extensible codebase
+
+### Technical Features
+
+* **Graphical Flows**: Generates visual flow diagrams using Graphviz
+* **PDF Generation**: Produces A4 PDF files with one page per interface
+* **Color Coding**: 
+  - 🟢 Green for PASS rules
+  - 🔴 Red for BLOCK rules
+  - 🟡 Yellow for disabled rules
+* **Network Mapping**: Distinguishes between VLANs/networks and destination hosts
+* **Comprehensive Coverage**: Handles floating rules, disabled rules, and all interface types
+
+## 📋 Prerequisites
+
+### Python Requirements
+
+- Python 3.7 or higher
+- Required packages (see Installation)
+
+### System Requirements
+
+- **Graphviz**: Must be installed on your system
+  - **Windows**: Download from [Graphviz website](https://graphviz.org/download/)
+  - **Linux**: `sudo apt-get install graphviz` (Debian/Ubuntu) or `sudo yum install graphviz` (RHEL/CentOS)
+  - **macOS**: `brew install graphviz`
+
+### Firewall API Setup
+
+#### pfSense
+
+1. Install **pfSense REST API Package**: [pfSense REST API Documentation](https://github.com/jaredhendrickson13/pfsense-api?tab=readme-ov-file#quickstart)
+2. Configure the listening interface(s) on pfSense
+3. Generate an API key for authentication
+
+#### OPNSense
+
+1. Create API credentials in OPNSense:
+   - Go to **System > Access > Users**
+   - Create or edit a user
+   - Generate API key and secret in **API Keys** section
 
 ## 💾 Installation
 
-1. Prerequisites
+### Option 1: Install as Package (Recommended)
 
-Install the required Python libraries:
+```bash
+# Clone the repository
+git clone <repository-url>
+cd PyFRC2G-main
 
-```Bash
+# Install in development mode
+pip install -e .
+
+# Or install directly
+pip install .
+```
+
+### Option 2: Direct Usage
+
+```bash
+# Install dependencies
 pip install requests graphviz reportlab
+
+# Use the script directly
+python pyfrc2g.py
 ```
 
-2. pfSense
+## ⚙️ Configuration
 
-Install **pfSense REST API Package**: [https://github.com/jaredhendrickson13/pfsense-api?tab=readme-ov-file#quickstart](https://github.com/jaredhendrickson13/pfsense-api?tab=readme-ov-file#quickstart)
+### 1. Edit Configuration File
 
-Once the **pfSense REST API** package is installed, configure the listening interface(s) on **pfSense**, then generate a key that will be used for API authentication.
+Edit `pyfrc2g/config.py` to configure your gateway:
 
-3. Script configuration
+#### For pfSense:
 
-Download the **pyfrc2g.py**, **config.py** and **md5sum.txt** files corresponding to your gateway for pfSense or OPNSense (scripts/OPNSense/ENG).
-
-Configure the **URL** of your gateway and your **credentials** in the **pyfrc2g.py** file.
-
-Example with pfSense:
 ```python
-# --- CONFIG ---
-PFS_URL = "https://pfs01.domaine.lan/api/v2/firewall/rules"
-PFS_TOKEN = "YOUR_KEY_GENERATED_WITH_PFSENSE_REST_API"
-PASSERELLE = "PFS01"
+GATEWAY_TYPE = "pfsense"
+
+PFS_BASE_URL = "https://pfs01.domain.lan"
+PFS_TOKEN = "YOUR_API_KEY_GENERATED_WITH_PFSENSE_REST_API"
+
+GATEWAY_NAME = "PFS01"
 ```
 
-For **OPNSense**, you also need to specify the interface names because the API does not allow retrieving rules per interface (they are displayed under Interfaces > Assignments).
+#### For OPNSense:
 
-Example with OPNSense:
 ```python
-OPNS_URL = "https://<OPNS_ADDRESS>/api/firewall/filter/search_rule"
-OPNS_SECRET = "<API_SECRET>"
-OPNS_KEY = "<API_KEY>"
-PASSERELLE = "<GW_NAME>"
-(...)
-# Declare the interfaces present on OPNSense
-INTERFACES = ["wan", "lan", "opt1"]
+GATEWAY_TYPE = "opnsense"
+
+OPNS_URL = "https://opnsense.domain.lan/api/firewall/filter/search_rule"
+OPNS_SECRET = "YOUR_API_SECRET"
+OPNS_KEY = "YOUR_API_KEY"
+OPNS_BASE_URL = "https://opnsense.domain.lan"  # Optional
+
+GATEWAY_NAME = "OPNS01"
+
+# Option 1: Auto-detection (recommended)
+INTERFACES = []  # Leave empty for automatic detection
+
+# Option 2: Manual specification
+INTERFACES = ["wan", "lan", "opt1", "opt2"]
 ```
 
-Then configure your interfaces, networks, interface addresses, and ports in the **config.py** file.
+### 2. No Config File Needed! 🎉
 
-Example with pfSense:
-```python
-INTERFACE_MAP = {
-    "wan": "WAN",
-    "lan": "ADMINISTRATION",
-    "opt1": "LAN",
-    "opt2": "DMZ"
-}
+**The package automatically retrieves all aliases from the firewall API:**
+- Interface names and descriptions
+- Network aliases
+- Address aliases
+- Port aliases
 
-NET_MAP = {
-    "wan": "WAN SUBNET",
-    "lan": "ADMINISTRATION SUBNET",
-    "opt1": "LAN SUBNET",
-    "opt2": "DMZ SUBNET"
-}
-
-ADDRESS_MAP = {
-    "wan:ip": "WAN ADDRESS",
-    "lan:ip": "ADMINISTRATION ADDRESS",
-    "opt1:ip": "LAN ADDRESS",
-    "opt2:ip": "DMZ ADDRESS"
-}
-
-PORT_MAP = {
-    "WEB_ACCESS": "80/443"
-}
-```
-
-For OPNSense, things work a bit differently. For example, in pfSense, when a rule is destined for all networks, it is shown as "destination: Any". In OPNSense it appears as:
-```
-Destination:
-  any: 1
-```
-
-Therefore, I declared "1": "Any" in config.py so that Any appears in the source and destination fields on the graphical flow.
-```python
-# --- INTERFACE MAPPING TABLE ---
-INTERFACE_MAP = {
-    "wan": "WAN",
-    "lan": "LAN",
-    "opt1": "DMZ01",
-    "(self)": "All interfaces",
-    "(em0)": "WAN",
-    "1": "Any",
-    "<sshlockout>": "IPs banned after too many SSH/Web Console attempts",
-    "<virusprot>": "IPs banned after suspicious behavior"
-}
-
-# --- NETWORK MAPPING TABLE ---
-NET_MAP = {
-    "wan": "WAN SUBNET",
-    "lan": "LAN SUBNET",
-    "opt1": "DMZ01 SUBNET",
-    "(self)": "All interfaces",
-    "1": "Any"
-}
-(...)
-```
+No manual configuration file is required! Everything is fetched directly from your firewall's API.
 
 ## 🚀 Usage
 
-1. Basic usage
+### Basic Usage
 
-Run the **pyfrc2g.py** script. It will generate a final PDF file (after creating several intermediate files which are deleted once execution finishes). Each page is named with the gateway and interface to make navigation easier.
+#### As a Script:
 
-If no rule has been added or modified, the script does not regenerate the PDF (the script compares the md5sum between the previous CSV version and the current one). You can reset the `md5sum.txt` file with the command `echo > md5sum.txt`
-
-2. Usage with CISO Assistant
-
-Download the **pyfrc2g-ciso_assist.py**, **config.py**, and **md5sum.txt** files corresponding to your gateway (pfSense or OPNSense).
-
-Configure the gateway access settings as described earlier, then fill in the CISO Assistant section:
-```python
-# CISO Assistant
-CISO_URL = "https://<CISO_ASSISTANT_ADDRESS>"
-CISO_TOKEN = "<CISO_ASSISTANT_TOKEN>"
-CISO_EVIDENCE = f"{CISO_URL}/api/evidences/<EVIDENCE_ID>/upload/"
+```bash
+python pyfrc2g.py
 ```
 
-3. Notes
+#### As an Installed Package:
 
-* When retrieving destination hosts, the pfSense API does not indicate which network the host belongs to. Therefore, I added comments for destination hosts in pfSense specifying which VLAN they belong to.
-* For destination hosts outside my internal infrastructure, I prefixed each alias name in pfSense with EXT_.
-* OPNSense exposes rules through its API in a completely different way than pfSense. As of today, I have not found a way to retrieve disabled rules. Auto-generated floating rules are also not easy to retrieve.
+```bash
+pyfrc2g
+```
 
-## 📝 Todo
+#### As a Python Module:
 
-* Improve the code (I’m not a developer and it shows).
-* Automate the script so that graphs are regenerated only for changed rules.
-* Notify admins when graphs are generated.
-* Add the destination VLAN before a destination host.
-* ~~Do the same for OPNSense.~~
-* ~~Send evidence to CISO Assistant~~
-* Retrieve timestamps and authors for rule creation/modification.
+```python
+from pyfrc2g import Config, APIClient, GraphGenerator
+from pyfrc2g.main import main
+
+# Option 1: Use the main function
+main()
+
+# Option 2: Use components directly
+config = Config()
+api_client = APIClient(config)
+graph_generator = GraphGenerator(config)
+
+# Fetch aliases
+api_client.fetch_aliases()
+
+# Fetch rules
+rules = api_client.fetch_rules()
+
+# Generate graphs
+graph_generator.generate_graphs(csv_path, output_dir)
+```
+
+### What the Script Does
+
+1. Connects to your gateway (pfSense or OPNSense)
+2. Fetches all aliases from the API
+3. Retrieves all firewall rules from all interfaces
+4. Auto-detects interfaces (for OPNSense, if not specified)
+5. Generates a temporary CSV file with all rules
+6. Compares with previous version (MD5 checksum)
+7. If changes detected, generates graphs and PDFs
+
+### Generated Files
+
+The script generates files in `tmp/graphs_<GATEWAY_NAME>/`:
+
+#### Global Files:
+- `<GATEWAY_NAME>_FLOW_MATRIX.pdf` - PDF with all interfaces (one page per interface)
+
+#### Per-Interface Files:
+- `<GATEWAY_NAME>_<interface>_flows.csv` - CSV file with rules for specific interface
+- `<GATEWAY_NAME>_<interface>_FLOW_MATRIX.pdf` - PDF with graphs for specific interface
+
+#### Tracking:
+- `md5sum.txt` - MD5 hash of last generated CSV (for change detection)
+
+### Example Output Structure
+
+```
+tmp/graphs_PFS01/
+├── PFS01_FLOW_MATRIX.pdf              # Global PDF (all interfaces)
+├── PFS01_wan_FLOW_MATRIX.pdf          # WAN interface PDF
+├── PFS01_wan_flows.csv                # WAN interface CSV
+├── PFS01_lan_FLOW_MATRIX.pdf          # LAN interface PDF
+├── PFS01_lan_flows.csv                # LAN interface CSV
+└── PFS01_opt1_FLOW_MATRIX.pdf         # OPT1 interface PDF
+```
+
+## 📊 Output Format
+
+The generated PDFs contain:
+
+- **One page per interface** with flow diagrams
+- **One page for floating rules**
+- **Graphical flow diagrams** showing:
+  - **Sources**: Network/host sources
+  - **Gateway/Interface**: Firewall interface name
+  - **Actions**: PASS (green) / BLOCK (red) with color coding
+  - **Protocols**: IP protocol (TCP, UDP, ICMP, etc.)
+  - **Ports**: Destination ports or port ranges
+  - **Destinations**: Network/host destinations
+  - **Comments**: Rule descriptions
+  - **Disabled Rules**: Highlighted in yellow
+
+## 🏗️ Project Structure
+
+```
+PyFRC2G-main/
+├── pyfrc2g/                    # Main package
+│   ├── __init__.py            # Package initialization and exports
+│   ├── config.py              # Configuration management
+│   ├── api_client.py          # API client for firewalls
+│   ├── graph_generator.py     # Graph and PDF generation
+│   ├── utils.py               # Utility functions
+│   └── main.py                # Main execution logic
+├── pyfrc2g.py                 # Entry point script
+├── setup.py                   # Package installation
+├── README.md                  # This file
+└── img/                       # Example images
+```
+
+### Module Descriptions
+
+#### `config.py`
+- Configuration class and constants
+- Gateway type settings (pfSense/OPNSense)
+- API credentials management
+- Output paths configuration
+
+#### `api_client.py`
+- `APIClient` class for firewall API interactions
+- Alias retrieval (interfaces, networks, addresses, ports)
+- Firewall rules retrieval
+- Interface auto-detection for both pfSense and OPNSense
+
+#### `graph_generator.py`
+- `GraphGenerator` class for graph and PDF generation
+- CSV parsing and grouping by interface
+- Graphviz graph creation
+- PDF generation from PNG files
+
+#### `utils.py`
+- Utility functions (MD5, URL extraction, filename sanitization)
+- Value mapping using API aliases
+- Global API alias maps management
+
+#### `main.py`
+- Main execution function
+- Orchestrates the entire workflow
+- Change detection using MD5
+- File cleanup
+
+## 🔍 Automatic Interface Detection (OPNSense)
+
+The package attempts multiple methods to automatically detect interfaces:
+
+1. **Interface API**: `/api/core/interfaces/listAll` or `/api/core/interfaces/list`
+2. **From Firewall Rules**: Analyzes all rules to extract used interfaces
+3. **Fallback**: If auto-detection fails, you must manually specify interfaces
+
+### Detection Logs
+
+```
+INFO:root:Attempting auto-detection of interfaces...
+INFO:root:✓ Auto-detected interfaces: ['wan', 'lan', 'opt1', 'opt2']
+```
+
+## 🛠️ Troubleshooting
+
+### Error: "Could not auto-detect interfaces"
+
+**Solution**: Manually specify interfaces in `pyfrc2g/config.py`:
+
+```python
+INTERFACES = ["wan", "lan", "opt1"]
+```
+
+### API Connection Error
+
+Check:
+- API URL is correct
+- Credentials (token/secret/key) are valid
+- SSL certificate (package ignores SSL errors with `verify=False`)
+- Firewall allows API access from your IP
+
+### No Rules Retrieved
+
+- Verify API returns data (test with curl or browser)
+- For OPNSense, check that specified interfaces exist
+- Check logs for detailed error messages
+- Verify API user has proper permissions
+
+### Graphviz Not Found
+
+**Windows**:
+- Download and install Graphviz from [official website](https://graphviz.org/download/)
+- Add Graphviz to system PATH
+
+**Linux**:
+```bash
+sudo apt-get install graphviz  # Debian/Ubuntu
+sudo yum install graphviz      # RHEL/CentOS
+```
+
+**macOS**:
+```bash
+brew install graphviz
+```
+
+### PDF Generation Fails
+
+- Ensure Graphviz is properly installed
+- Check that PNG files are generated in output directory
+- Verify write permissions in output directory
+
+## 📝 Notes
+
+- **Change Detection**: Package only regenerates PDFs when rules have changed (MD5 comparison)
+- **Force Regeneration**: Delete or empty `md5sum.txt` file to force regeneration
+- **Temporary Files**: CSV and PNG files are automatically cleaned up after processing
+- **API Aliases**: All aliases are fetched from API - no manual mapping needed
+- **Performance**: Large rule sets may take several minutes to process
+
+## 🔄 Migration from Old Versions
+
+If you were using version 1.x:
+
+1. **Configuration**: Edit `pyfrc2g/config.py` instead of `pyfrc2g.py`
+2. **Config File**: **No longer needed!** All aliases are fetched from API
+3. **Interfaces**: For OPNSense, you can leave `INTERFACES = []` for auto-detection
+4. **Usage**: Script usage remains the same: `python pyfrc2g.py`
+
+## 🆕 What's New in v2.0
+
+### Major Improvements
+
+- ✅ **Modular Architecture**: Clean, organized codebase with separate modules
+- ✅ **Fully English Codebase**: All code, comments, and messages in English
+- ✅ **API-Based Alias Retrieval**: No config file required
+- ✅ **Per-Interface File Generation**: Separate CSV and PDF for each interface
+- ✅ **Optimized Code**: Reduced code size, improved performance
+- ✅ **Better Error Handling**: More informative error messages
+- ✅ **Package Installation**: Can be installed as a Python package
+- ✅ **Module Usage**: Can be imported and used as a Python module
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📄 License
+
+See the LICENSE file for details.
+
+## 📧 Support
+
+For issues, questions, or contributions, please open an issue on the GitHub repository.
+
+---
+
+**Made with ❤️ for network administrators and security professionals**
