@@ -131,46 +131,31 @@ class CISOCClient:
             logging.debug(f"Full traceback:\n{traceback.format_exc()}")
             return False
     
-    def upload_all_pdfs(self, output_dir):
+    def upload_global_pdf(self, global_pdf_path):
         """
-        Upload all PDF files in the output directory to CISO Assistant.
+        Upload the global PDF file in the output directory to CISO Assistant.
         
         Args:
-            output_dir: Directory containing PDF files to upload
+            global_pdf_path: global PDF path to upload
             
         Returns:
-            dict: Statistics about uploads (successful, failed, total)
+            dict: Statistics about upload (successful, failed)
         """
         if not self.enabled:
             logging.debug("CISO Assistant not enabled, skipping uploads")
             return {"successful": 0, "failed": 0, "total": 0}
         
-        if not os.path.exists(output_dir):
-            logging.warning(f"Output directory not found: {output_dir}")
+        if not os.path.exists(global_pdf_path):
+            logging.warning(f"Global PDF not found: {global_pdf_path}")
             return {"successful": 0, "failed": 0, "total": 0}
         
-        # Find all PDF files
-        pdf_files = []
-        for root, dirs, files in os.walk(output_dir):
-            for file in files:
-                if file.lower().endswith('.pdf'):
-                    pdf_files.append(os.path.join(root, file))
-        
-        if not pdf_files:
-            logging.warning(f"No PDF files found in {output_dir}")
-            return {"successful": 0, "failed": 0, "total": 0}
-        
-        logging.info(f"Found {len(pdf_files)} PDF file(s) to upload to CISO Assistant")
-        
-        stats = {"successful": 0, "failed": 0, "total": len(pdf_files)}
-        
-        for pdf_path in sorted(pdf_files):
-            if self.upload_pdf(pdf_path):
-                stats["successful"] += 1
-            else:
-                stats["failed"] += 1
-        
-        logging.info(f"CISO Assistant upload complete: {stats['successful']}/{stats['total']} successful")
-        
-        return stats
+        stats = {"successful": 0, "failed": 0}
 
+        if self.upload_pdf(global_pdf_path):
+            stats["successful"] = 1
+        else:
+            stats["failed"] = 1
+        
+        logging.info(f"CISO Assistant upload complete: {stats['successful']} successful")
+
+        return stats
