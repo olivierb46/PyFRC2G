@@ -33,6 +33,7 @@ PyFRC2G was designed to meet two main objectives:
   - 🟡 Yellow for disabled rules
 * **Network Mapping**: Distinguishes between VLANs/networks and destination hosts
 * **Comprehensive Coverage**: Handles floating rules, disabled rules, and all interface types
+* **CISO Assistant Integration**: Optional automatic upload of PDFs to CISO Assistant as evidence revisions
 
 ## 📋 Prerequisites
 
@@ -125,7 +126,20 @@ INTERFACES = []  # Leave empty for automatic detection
 INTERFACES = ["wan", "lan", "opt1", "opt2"]
 ```
 
-### 2. No Config File Needed! 🎉
+### 2. CISO Assistant Integration (Optional)
+
+If you want to automatically upload generated PDFs to CISO Assistant as evidence revisions, configure the following in `pyfrc2g/config.py`:
+
+```python
+# CISO Assistant Configuration
+CISO_URL = "https://ciso-assistant.example.com"
+CISO_TOKEN = "YOUR_CISO_ASSISTANT_API_TOKEN"
+CISO_EVIDENCE_ID = "123"  # Evidence ID from CISO Assistant
+```
+
+**Note:** Leave these as default values (`<CISO_ASSISTANT_ADDRESS>`, etc.) to disable CISO Assistant integration.
+
+### 3. No Config File Needed! 🎉
 
 **The package automatically retrieves all aliases from the firewall API:**
 - Interface names and descriptions
@@ -184,6 +198,7 @@ graph_generator.generate_graphs(csv_path, output_dir)
 5. Generates a temporary CSV file with all rules
 6. Compares with previous version (MD5 checksum)
 7. If changes detected, generates graphs and PDFs
+8. Uploads PDFs to CISO Assistant (if configured)
 
 ### Generated Files
 
@@ -236,6 +251,7 @@ PyFRC2G-main/
 │   ├── config.py              # Configuration management
 │   ├── api_client.py          # API client for firewalls
 │   ├── graph_generator.py     # Graph and PDF generation
+│   ├── ciso_client.py         # CISO Assistant integration
 │   ├── utils.py               # Utility functions
 │   └── main.py                # Main execution logic
 ├── pyfrc2g.py                 # Entry point script
@@ -274,6 +290,12 @@ PyFRC2G-main/
 - Orchestrates the entire workflow
 - Change detection using MD5
 - File cleanup
+- CISO Assistant integration
+
+#### `ciso_client.py`
+- `CISOCClient` class for CISO Assistant integration
+- Uploads generated PDFs as evidence revisions
+- Handles authentication and error reporting
 
 ## 🔍 Automatic Interface Detection (OPNSense)
 
@@ -345,6 +367,7 @@ brew install graphviz
 - **Temporary Files**: CSV and PNG files are automatically cleaned up after processing
 - **API Aliases**: All aliases are fetched from API - no manual mapping needed
 - **Performance**: Large rule sets may take several minutes to process
+- **CISO Assistant**: PDFs are uploaded automatically after generation (if configured). Each upload creates a new revision in the evidence record, maintaining a history of firewall rule changes.
 
 ## 🔄 Migration from Old Versions
 
@@ -367,6 +390,22 @@ If you were using version 1.x:
 - ✅ **Better Error Handling**: More informative error messages
 - ✅ **Package Installation**: Can be installed as a Python package
 - ✅ **Module Usage**: Can be imported and used as a Python module
+- ✅ **CISO Assistant Integration**: Automatic upload of generated PDFs to CISO Assistant as evidence revisions
+
+## 📝 Todo
+
+Future improvements and features planned for PyFRC2G:
+
+- [ ] **Code Improvements**: Continue improving code quality and structure
+- [x] **Automated Change Detection**: Graphs are regenerated only when rules have changed (MD5 comparison) ✅
+- [ ] **Admin Notifications**: Notify administrators when graphs are generated
+- [ ] **Destination VLAN Display**: Add the destination VLAN before a destination host in the graphical view
+- [x] **OPNSense Support**: Full support for OPNSense firewalls ✅
+- [x] **CISO Assistant Integration**: Automatic upload of PDFs to CISO Assistant as evidence revisions ✅
+- [ ] **Rule Metadata**: Retrieve timestamps and authors for rule creation/modification
+- [ ] **Enhanced Error Reporting**: More detailed error messages and recovery suggestions
+- [ ] **Configuration Validation**: Validate configuration before execution
+- [ ] **Multiple Gateway Support**: Support for processing multiple gateways in a single run
 
 ## 🤝 Contributing
 

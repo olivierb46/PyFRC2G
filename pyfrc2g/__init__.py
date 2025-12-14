@@ -9,12 +9,14 @@ __author__ = "PyFRC2G Contributors"
 from pyfrc2g.config import Config
 from pyfrc2g.api_client import APIClient
 from pyfrc2g.graph_generator import GraphGenerator
+from pyfrc2g.ciso_client import CISOCClient
 from pyfrc2g.utils import calculate_md5, extract_base_url, normalize_ports, safe_filename, map_value
 
 __all__ = [
     'Config',
     'APIClient',
     'GraphGenerator',
+    'CISOCClient',
     'calculate_md5',
     'extract_base_url',
     'normalize_ports',

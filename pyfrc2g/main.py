@@ -10,6 +10,7 @@ import sys
 from pyfrc2g.config import Config
 from pyfrc2g.api_client import APIClient
 from pyfrc2g.graph_generator import GraphGenerator
+from pyfrc2g.ciso_client import CISOCClient
 from pyfrc2g.utils import calculate_md5, map_value, normalize_ports
 
 
@@ -26,6 +27,7 @@ def main():
     config = Config()
     api_client = APIClient(config)
     graph_generator = GraphGenerator(config)
+    ciso_client = CISOCClient(config)
     
     logging.debug(f"Configuration loaded: gateway_type={config.gateway_type}, gateway_name={config.gateway_name}")
     if config.gateway_type.lower() == "pfsense":
@@ -143,6 +145,15 @@ def main():
                     logging.info(f"✓ PNG deleted: {png}")
         except Exception as e:
             logging.warning(f"Could not delete some PNG files: {e}")
+        
+        # Upload to CISO Assistant if configured
+        if ciso_client.enabled:
+            logging.info("Uploading PDFs to CISO Assistant...")
+            stats = ciso_client.upload_all_pdfs(config.graph_output_dir)
+            if stats["successful"] > 0:
+                logging.info(f"✓ Successfully uploaded {stats['successful']} PDF(s) to CISO Assistant")
+            if stats["failed"] > 0:
+                logging.warning(f"⚠ Failed to upload {stats['failed']} PDF(s) to CISO Assistant")
     else:
         logging.info("No rules created or modified")
     

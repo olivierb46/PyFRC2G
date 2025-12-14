@@ -19,6 +19,12 @@ INTERFACES = []  # Auto-detect if empty, e.g., ["wan", "lan", "opt1", "opt2"]
 GATEWAY_NAME = "<GW_NAME>"  # Display name for gateway (used in labels)
 # Output directory will be automatically set to results/<ip_or_domain>/
 
+# CISO Assistant Configuration (optional)
+# Leave as default values to disable CISO Assistant integration
+CISO_URL = "https://<CISO_ASSISTANT_ADDRESS>"
+CISO_TOKEN = "<CISO_ASSISTANT_TOKEN>"
+CISO_EVIDENCE_ID = "<EVIDENCE_ID>"  # Evidence ID from CISO Assistant
+
 # Constants
 CSV_FIELDNAMES = ["SOURCE", "GATEWAY", "ACTION", "PROTOCOL", "PORT", "DESTINATION", "COMMENT", "DISABLED", "FLOATING"]
 FLOATING_RULES_LABELS = ["Floating-rules", "Regles-flottantes", "Règles flottantes"]
@@ -72,6 +78,15 @@ class Config:
         # Set gateway_name if not already set
         if self.gateway_name is None:
             self.gateway_name = firewall_host
+        
+        # CISO Assistant Configuration
+        self.ciso_url = CISO_URL
+        self.ciso_token = CISO_TOKEN
+        # Build evidence URL from base URL and evidence ID
+        if CISO_URL != "https://<CISO_ASSISTANT_ADDRESS>" and CISO_EVIDENCE_ID != "<EVIDENCE_ID>":
+            self.ciso_evidence_url = f"{CISO_URL}/api/evidences/{CISO_EVIDENCE_ID}/upload/"
+        else:
+            self.ciso_evidence_url = f"{CISO_URL}/api/evidences/<EVIDENCE_ID>/upload/"
         
         # Constants
         self.csv_fieldnames = CSV_FIELDNAMES
