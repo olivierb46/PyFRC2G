@@ -74,12 +74,13 @@ class Config:
             base_url = self.opns_base_url if self.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.opns_url)
         
         firewall_host = extract_host_from_url(base_url)
-        self.graph_output_dir = f"results/{self.gateway_name}"
-        self.csv_file = f"output_{self.gateway_name}.csv"
         
         # Set gateway_name if not already set
         if self.gateway_name is None:
             self.gateway_name = firewall_host
+        
+        self.graph_output_dir = f"results/{self.gateway_name}"
+        self.csv_file = f"output_{self.gateway_name}.csv"
         
         # CISO Assistant Configuration
         self.ciso_url = CISO_URL
