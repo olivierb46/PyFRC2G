@@ -23,7 +23,9 @@ GATEWAY_NAME = "<GW_NAME>"  # Display name for gateway (used in labels)
 # Leave as default values to disable CISO Assistant integration
 CISO_URL = "https://<CISO_ASSISTANT_ADDRESS>"
 CISO_TOKEN = "<CISO_ASSISTANT_TOKEN>"
-CISO_EVIDENCE_ID = "<EVIDENCE_ID>"  # Evidence ID from CISO Assistant
+CISO_EVIDENCE_PATH = f"{CISO_URL}/api/evidence-revisions/"
+CISO_FORLDER_ID = "<CISO_FOLDER_ID>" # Domain ID from CISO Assistant
+CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID>"  # Evidence ID from CISO Assistant
 
 # Constants
 CSV_FIELDNAMES = ["SOURCE", "GATEWAY", "ACTION", "PROTOCOL", "PORT", "DESTINATION", "COMMENT", "DISABLED", "FLOATING"]
@@ -82,11 +84,9 @@ class Config:
         # CISO Assistant Configuration
         self.ciso_url = CISO_URL
         self.ciso_token = CISO_TOKEN
-        # Build evidence URL from base URL and evidence ID
-        if CISO_URL != "https://<CISO_ASSISTANT_ADDRESS>" and CISO_EVIDENCE_ID != "<EVIDENCE_ID>":
-            self.ciso_evidence_url = f"{CISO_URL}/api/evidences/{CISO_EVIDENCE_ID}/upload/"
-        else:
-            self.ciso_evidence_url = f"{CISO_URL}/api/evidences/<EVIDENCE_ID>/upload/"
+        self.ciso_evidence_path = CISO_EVIDENCE_PATH
+        self.ciso_folder_id = CISO_FORLDER_ID
+        self.ciso_evidence_id = CISO_EVIDENCE_ID
         
         # Constants
         self.csv_fieldnames = CSV_FIELDNAMES
