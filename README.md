@@ -115,18 +115,18 @@ GATEWAY_NAME = "PFS01"
 ```python
 GATEWAY_TYPE = "opnsense"
 
-OPNS_URL = "https://opnsense.domain.lan/api/firewall/filter/search_rule"
+# OPNSense Configuration
+OPNS_BASE_URL = "https://opnsense.domain.lan"
 OPNS_SECRET = "YOUR_API_SECRET"
 OPNS_KEY = "YOUR_API_KEY"
-OPNS_BASE_URL = "https://opnsense.domain.lan"  # Optional
-
-GATEWAY_NAME = "OPNS01"
 
 # Option 1: Auto-detection (recommended)
 INTERFACES = []  # Leave empty for automatic detection
 
 # Option 2: Manual specification
 INTERFACES = ["wan", "lan", "opt1", "opt2"]
+
+GATEWAY_NAME = "OPNS01"  # Display name for gateway (used in labels)
 ```
 
 ### 2. CISO Assistant Integration (Optional)
