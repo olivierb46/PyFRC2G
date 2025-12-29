@@ -15,7 +15,8 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/PyFRC2G",
-    packages=find_packages(),
+    #packages=find_packages(),
+    package_dir = {"pyfrc2g": "modules"},
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: System Administrators",
