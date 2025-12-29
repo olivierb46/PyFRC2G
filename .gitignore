@@ -1,0 +1,20 @@
+#virtual environment
+env/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Git
+.git
+
+
+# Outputs locales
+results/
+output_*.csv
+
+# IDE
+.vscode/
+.idea/

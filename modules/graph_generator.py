@@ -6,6 +6,7 @@ import os
 import glob
 import csv
 import logging
+import hashlib
 from collections import OrderedDict
 from graphviz import Digraph
 from modules.utils import normalize_ports, safe_filename, map_value, format_alias_label
@@ -40,6 +41,12 @@ class GraphGenerator:
                 continue
             
             interface_safe = safe_filename(interface_name)
+            if len(interface_safe) > 80:
+                interface_safe = (
+                        interface_safe[:60]
+                        + "_"
+                        + hashlib.md5(interface_safe.encode()).hexdigest()[:8]
+                )
             logging.info(f"Processing interface: {interface_name} ({len(rules)} rules)")
             
             # Extract host from output directory path (results/host/)
