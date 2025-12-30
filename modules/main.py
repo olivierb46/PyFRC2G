@@ -8,11 +8,11 @@ import glob
 import logging
 import sys
 import shutil
-from modules.config import Config
-from modules.api_client import APIClient
-from modules.graph_generator import GraphGenerator
-from modules.ciso_client import CISOCClient
-from modules.utils import calculate_md5, map_value, normalize_ports
+from .config import Config
+from .api_client import APIClient
+from .graph_generator import GraphGenerator
+from .ciso_client import CISOCClient
+from .utils import calculate_md5, map_value, normalize_ports
 
 
 def main():
@@ -24,36 +24,36 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
+
     config = Config()
     api_client = APIClient(config)
     graph_generator = GraphGenerator(config)
     ciso_client = CISOCClient(config)
-    
+
     logging.debug(f"Configuration loaded: gateway_type={config.gateway_type}, gateway_name={config.gateway_name}")
     if config.gateway_type.lower() == "pfsense":
         logging.debug(f"pfSense URL: {config.pfs_url}, Base URL: {config.pfs_base_url}")
     elif config.gateway_type.lower() == "opnsense":
         logging.debug(f"OPNSense Base URL: {config.opns_base_url}, Rules URL: {config.opns_url}")
         logging.debug(f"OPNSense Interfaces: {config.interfaces}")
-    
+
     logging.info(f"Starting rule extraction for {config.gateway_type}")
-    
+
     # Fetch aliases from API
     logging.info("Fetching aliases from API...")
     logging.debug("Calling fetch_aliases()...")
     api_client.fetch_aliases()
     logging.debug(f"Aliases loaded: {len(api_client.interface_map)} interfaces, {len(api_client.net_map)} networks, {len(api_client.port_map)} ports")
-    
+
     # Extract rules
     with open(config.csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=config.csv_fieldnames)
         writer.writeheader()
-        
+
         if config.gateway_type.lower() == "pfsense":
             logging.debug("Fetching pfSense rules...")
             entries = api_client.fetch_rules()
-            
+
             if entries:
                 logging.info(f"Retrieved {len(entries)} rules from pfSense")
                 logging.debug(f"First rule sample: {entries[0] if entries else 'N/A'}")
@@ -71,33 +71,33 @@ def main():
                     })
             else:
                 logging.warning("No firewall rules retrieved from pfSense")
-        
+
         elif config.gateway_type.lower() == "opnsense":
             logging.debug("Fetching OPNSense rules...")
             entries = api_client.fetch_rules()
-            
+
             if not entries:
                 logging.error("No rules retrieved from OPNSense")
                 return
-            
+
             logging.debug(f"Retrieved {len(entries)} rules from OPNSense")
             if entries:
                 logging.debug(f"First rule sample: {entries[0] if entries else 'N/A'}")
-            
+
             # Write entries
             for entry in entries:
-                source_val = (entry.get('source', {}).get('network') or 
-                            entry.get('source', {}).get('address') or 
-                            entry.get('source_net') or 
+                source_val = (entry.get('source', {}).get('network') or
+                            entry.get('source', {}).get('address') or
+                            entry.get('source_net') or
                             entry.get('source', {}).get('any'))
-                destination_val = (entry.get('destination', {}).get('network') or 
-                                 entry.get('destination', {}).get('address') or 
-                                 entry.get('destination', {}).get('any') or 
+                destination_val = (entry.get('destination', {}).get('network') or
+                                 entry.get('destination', {}).get('address') or
+                                 entry.get('destination', {}).get('any') or
                                  entry.get("destination_net"))
-                port_dest_val = (entry.get('destination', {}).get('port') or 
+                port_dest_val = (entry.get('destination', {}).get('port') or
                                entry.get("destination_port"))
                 entry_interface = entry.get("interface")
-                
+
                 writer.writerow({
                     "SOURCE": map_value(source_val, "source", config.any_value),
                     "GATEWAY": f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}" if entry_interface else f"{config.gateway_name}/Floating-rules",
@@ -112,38 +112,38 @@ def main():
         else:
             logging.error(f"Unknown gateway type: {config.gateway_type}. Use 'pfsense' or 'opnsense'.")
             return
-    
+
     logging.info(f"✓ CSV file generated: {config.csv_file}")
-    
+
     # Check for changes using MD5
     prev_md5 = ""
     if os.path.exists("md5sum.txt"):
         with open("md5sum.txt", "r") as f:
             prev_md5 = f.readline().strip()
-    
+
     actual_md5 = calculate_md5(config.csv_file)
     logging.debug(f"MD5 comparison: previous={prev_md5[:8]}..., current={actual_md5[:8]}...")
-    
+
     if prev_md5 != actual_md5:
         with open("md5sum.txt", "w") as f:
             f.write(f"{actual_md5}\n")
         logging.info("Changes detected, generating graphs...")
-        
+
         # Create global CSV file (copy of all rules)
         os.makedirs(config.graph_output_dir, exist_ok=True)
         host_name = os.path.basename(config.graph_output_dir) if os.path.basename(config.graph_output_dir) else "gateway"
         global_csv = os.path.join(config.graph_output_dir, f"{host_name}_ALL_flows.csv")
         shutil.copy2(config.csv_file, global_csv)
         logging.info(f"✓ Global CSV created: {global_csv}")
-        
+
         # Generate global file (all interfaces together)
         logging.info("Generating global graph (all interfaces combined)...")
         graph_generator.generate_graphs(config.csv_file, config.graph_output_dir)
-        
+
         # Generate per-interface files (separate graphs for each interface)
         logging.info("Generating per-interface graphs (separate files for each interface)...")
         graph_generator.generate_by_interface(config.csv_file, config.graph_output_dir)
-        
+
         # Cleanup PNG files (after PDFs are generated)
         try:
             png_files = glob.glob(os.path.join(config.graph_output_dir, "*.png"))
@@ -155,7 +155,7 @@ def main():
                 logging.info(f"✓ Cleaned up {len(png_files)} temporary PNG file(s)")
         except Exception as e:
             logging.warning(f"Could not delete some PNG files: {e}")
-        
+
         # Upload to CISO Assistant if configured
         if ciso_client.enabled:
             logging.info("Uploading PDFs to CISO Assistant...")
@@ -167,7 +167,7 @@ def main():
                 logging.warning(f"⚠ Failed to upload {stats['failed']} PDF(s) to CISO Assistant")
     else:
         logging.info("No rules created or modified")
-    
+
     # Cleanup CSV
     if os.path.exists(config.csv_file):
         os.remove(config.csv_file)

@@ -37,7 +37,7 @@ ANY_VALUE = "Any"
 
 class Config:
     """Configuration class for PyFRC2G"""
-    
+
     def __init__(self):
         self.gateway_type = GATEWAY_TYPE
         # Use gateway name, or extract from URL if not set
@@ -46,7 +46,7 @@ class Config:
         else:
             # Will be set after determining firewall host
             self.gateway_name = None
-        
+
         # pfSense - Build URL from base URL
         self.pfs_base_url = PFS_BASE_URL
         if PFS_BASE_URL != "https://<PFS_ADDRESS>":
@@ -54,7 +54,7 @@ class Config:
         else:
             self.pfs_url = "https://<PFS_ADDRESS>/api/v2/firewall/rules"
         self.pfs_token = PFS_TOKEN
-        
+
         # OPNSense - Build URL from base URL
         self.opns_base_url = OPNS_BASE_URL
         if OPNS_BASE_URL != "https://<OPNS_ADDRESS>":
@@ -64,31 +64,31 @@ class Config:
         self.opns_secret = OPNS_SECRET
         self.opns_key = OPNS_KEY
         self.interfaces = INTERFACES
-        
+
         # Determine output directory from firewall address
-        from modules.utils import extract_host_from_url, extract_base_url
-        
+        from .utils import extract_host_from_url, extract_base_url
+
         if self.gateway_type.lower() == "pfsense":
             base_url = self.pfs_base_url if self.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.pfs_url)
         else:
             base_url = self.opns_base_url if self.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.opns_url)
-        
+
         firewall_host = extract_host_from_url(base_url)
-        
+
         # Set gateway_name if not already set
         if self.gateway_name is None:
             self.gateway_name = firewall_host
-        
+
         self.graph_output_dir = f"results/{self.gateway_name}"
         self.csv_file = f"output_{self.gateway_name}.csv"
-        
+
         # CISO Assistant Configuration
         self.ciso_url = CISO_URL
         self.ciso_token = CISO_TOKEN
         self.ciso_evidence_path = CISO_EVIDENCE_PATH
         self.ciso_folder_id = CISO_FORLDER_ID
         self.ciso_evidence_id = CISO_EVIDENCE_ID
-        
+
         # Constants
         self.csv_fieldnames = CSV_FIELDNAMES
         self.floating_rules_labels = FLOATING_RULES_LABELS
