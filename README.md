@@ -222,7 +222,7 @@ The script generates files in `results/graphs_<GATEWAY_NAME>/`:
 ### Example Output Structure
 
 ```
-tmp/graphs_PFS01/
+results/graphs_PFS01/
 ├── PFS01_FLOW_MATRIX.pdf              # Global PDF (all interfaces)
 ├── PFS01_wan_FLOW_MATRIX.pdf          # WAN interface PDF
 ├── PFS01_wan_flows.csv                # WAN interface CSV
