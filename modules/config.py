@@ -1,3 +1,4 @@
+import os
 """
 Configuration module for PyFRC2G
 """
@@ -6,8 +7,8 @@ Configuration module for PyFRC2G
 GATEWAY_TYPE = "pfsense"
 
 # pfSense Configuration
-PFS_BASE_URL = "https://<PFS_ADDRESS>"
-PFS_TOKEN = "<YOUR_PFSENSE_API_TOKEN>"
+PFS_BASE_URL = os.environ.get("PFS_BASE_URL")
+PFS_TOKEN = os.environ.get("PFS_TOKEN")
 
 # OPNSense Configuration
 OPNS_BASE_URL = "https://<OPNS_ADDRESS>"
