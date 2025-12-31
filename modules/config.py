@@ -1,3 +1,4 @@
+import os
 """
 Configuration module for PyFRC2G
 """
@@ -6,8 +7,8 @@ Configuration module for PyFRC2G
 GATEWAY_TYPE = "pfsense"
 
 # pfSense Configuration
-PFS_BASE_URL = "https://<PFS_ADDRESS>"
-PFS_TOKEN = "<YOUR_PFSENSE_API_TOKEN>"
+PFS_BASE_URL = os.environ.get("PFS_BASE_URL")
+PFS_TOKEN = os.environ.get("PFS_TOKEN")
 
 # OPNSense Configuration
 OPNS_BASE_URL = "https://<OPNS_ADDRESS>"
@@ -79,9 +80,12 @@ class Config:
         if self.gateway_name is None:
             self.gateway_name = firewall_host
         
+        #self.graph_output_dir = f"results/{self.gateway_name}"
+        #self.csv_file = f"output_{self.gateway_name}.csv"
         self.graph_output_dir = f"results/{self.gateway_name}"
-        self.csv_file = f"output_{self.gateway_name}.csv"
-        
+        os.makedirs(self.graph_output_dir, exist_ok=True)
+        self.csv_file = os.path.join(self.graph_output_dir, f"output_{self.gateway_name}.csv")
+        self.md5_file = os.path.join(self.graph_output_dir, "md5sum.txt")
         # CISO Assistant Configuration
         self.ciso_url = CISO_URL
         self.ciso_token = CISO_TOKEN
