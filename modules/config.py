@@ -80,9 +80,12 @@ class Config:
         if self.gateway_name is None:
             self.gateway_name = firewall_host
         
+        #self.graph_output_dir = f"results/{self.gateway_name}"
+        #self.csv_file = f"output_{self.gateway_name}.csv"
         self.graph_output_dir = f"results/{self.gateway_name}"
-        self.csv_file = f"output_{self.gateway_name}.csv"
-        
+        os.makedirs(self.graph_output_dir, exist_ok=True)
+        self.csv_file = os.path.join(self.graph_output_dir, f"output_{self.gateway_name}.csv")
+        self.md5_file = os.path.join(self.graph_output_dir, "md5sum.txt")
         # CISO Assistant Configuration
         self.ciso_url = CISO_URL
         self.ciso_token = CISO_TOKEN
