@@ -44,7 +44,11 @@ def main():
     logging.debug("Calling fetch_aliases()...")
     api_client.fetch_aliases()
     logging.debug(f"Aliases loaded: {len(api_client.interface_map)} interfaces, {len(api_client.net_map)} networks, {len(api_client.port_map)} ports")
-    
+
+    # Create outpout_dir with gateway name
+    if not os.path.exists(config.graph_output_dir):
+        os.makedirs(config.graph_output_dir)
+
     # Extract rules
     with open(config.csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=config.csv_fieldnames)
@@ -117,15 +121,15 @@ def main():
     
     # Check for changes using MD5
     prev_md5 = ""
-    if os.path.exists("md5sum.txt"):
-        with open("md5sum.txt", "r") as f:
+    if os.path.exists(config.md5_file):
+        with open(config.md5_file, "r") as f:
             prev_md5 = f.readline().strip()
     
     actual_md5 = calculate_md5(config.csv_file)
     logging.debug(f"MD5 comparison: previous={prev_md5[:8]}..., current={actual_md5[:8]}...")
     
     if prev_md5 != actual_md5:
-        with open("md5sum.txt", "w") as f:
+        with open(config.md5_file, "w") as f:
             f.write(f"{actual_md5}\n")
         logging.info("Changes detected, generating graphs...")
         
