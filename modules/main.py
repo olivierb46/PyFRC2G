@@ -61,17 +61,22 @@ def main():
             if entries:
                 logging.info(f"Retrieved {len(entries)} rules from pfSense")
                 logging.debug(f"First rule sample: {entries[0] if entries else 'N/A'}")
+                rule_counters = {}
                 for entry in entries:
+                    # Reorder rules number by interfaces
+                    gateway = f"{config.gateway_name}/{map_value(entry.get('interface'), 'interface', config.any_value)}"
+                    rule_counters[gateway] = rule_counters.get(gateway, 0) + 1
                     writer.writerow({
                         "SOURCE": map_value(entry.get("source"), "source", config.any_value),
-                        "GATEWAY": f"{config.gateway_name}/{map_value(entry.get('interface'), 'interface', config.any_value)}",
+                        "GATEWAY": gateway,
                         "ACTION": map_value(entry.get("type"), None, config.any_value),
                         "PROTOCOL": map_value(entry.get("protocol"), None, config.any_value),
                         "PORT": map_value(entry.get("destination_port"), "destination_port", config.any_value),
                         "DESTINATION": map_value(entry.get("destination"), "destination", config.any_value),
                         "COMMENT": map_value(entry.get("descr"), None, config.any_value),
                         "DISABLED": map_value(entry.get("disabled"), None, config.any_value),
-                        "FLOATING": map_value(entry.get("floating"), None, config.any_value)
+                        "FLOATING": map_value(entry.get("floating"), None, config.any_value),
+                        "RULE ORDER": rule_counters[gateway]
                     })
             else:
                 logging.warning("No firewall rules retrieved from pfSense")
@@ -89,6 +94,7 @@ def main():
                 logging.debug(f"First rule sample: {entries[0] if entries else 'N/A'}")
             
             # Write entries
+            rule_counters = {}
             for entry in entries:
                 source_val = (entry.get('source', {}).get('network') or 
                             entry.get('source', {}).get('address') or 
@@ -101,17 +107,22 @@ def main():
                 port_dest_val = (entry.get('destination', {}).get('port') or 
                                entry.get("destination_port"))
                 entry_interface = entry.get("interface")
+
+                # Reorder rules number by interfaces
+                gateway = f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}" if entry_interface else f"{config.gateway_name}/Floating-rules"
+                rule_counters[gateway] = rule_counters.get(gateway, 0) + 1
                 
                 writer.writerow({
                     "SOURCE": map_value(source_val, "source", config.any_value),
-                    "GATEWAY": f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}" if entry_interface else f"{config.gateway_name}/Floating-rules",
+                    "GATEWAY": gateway,
                     "ACTION": map_value(entry.get("action"), None, config.any_value),
                     "PROTOCOL": map_value(entry.get("protocol"), None, config.any_value),
                     "PORT": map_value(port_dest_val, "destination_port", config.any_value),
                     "DESTINATION": map_value(destination_val, "destination", config.any_value),
                     "COMMENT": map_value(entry.get("description"), None, config.any_value),
                     "DISABLED": "False",
-                    "FLOATING": "True" if not entry_interface else "False"
+                    "FLOATING": "True" if not entry_interface else "False",
+                    "RULE ORDER": rule_counters[gateway]
                 })
         else:
             logging.error(f"Unknown gateway type: {config.gateway_type}. Use 'pfsense' or 'opnsense'.")
