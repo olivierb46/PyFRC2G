@@ -102,7 +102,8 @@ def main():
                             entry.get('source', {}).get('any'))
                 destination_val = (entry.get('destination', {}).get('network') or 
                                  entry.get('destination', {}).get('address') or 
-                                 entry.get('destination', {}).get('any') or 
+                                 entry.get('destination', {}).get('any') or
+                                 entry.get("%destination_net") or
                                  entry.get("destination_net"))
                 port_dest_val = (entry.get('destination', {}).get('port') or 
                                entry.get("destination_port"))
