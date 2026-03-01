@@ -116,6 +116,7 @@ class GraphGenerator:
                 action_clean = str(action).replace('<', '').replace('>', '') if action else UNKNOWN_LABEL
                 destination_clean = str(destination).replace('<', '').replace('>', '') if destination else UNKNOWN_LABEL
                 comment_clean = str(comment).replace('<', '').replace('>', '') if comment else ""
+                rule_number = (row.get("RULE ORDER") or "").strip()
                 
                 # Format labels with alias details if available
                 source_formatted = format_alias_label(source, source_clean)
@@ -129,9 +130,9 @@ class GraphGenerator:
                 port_label = f"PORT | {port_formatted}"
                 
                 if disabled == "True":
-                    destination_label = f"{destination_formatted} | {comment_clean} | {DISABLED_LABEL}" if comment_clean else f"VLAN | {destination_formatted} | {DISABLED_LABEL}"
+                    destination_label = f"Rule #{rule_number} | {destination_formatted} | {comment_clean} | {DISABLED_LABEL}" if comment_clean else f"Rule #{rule_number} | VLAN | {destination_formatted} | {DISABLED_LABEL}"
                 else:
-                    destination_label = f"{destination_formatted} | {comment_clean}" if comment_clean else f"VLAN | {destination_formatted}"
+                    destination_label = f"Rule #{rule_number} | {destination_formatted} | {comment_clean}" if comment_clean else f"Rule #{rule_number} | VLAN | {destination_formatted}"
                 
                 # Initialize cluster/source
                 if gateway not in flows_by_gateway:
