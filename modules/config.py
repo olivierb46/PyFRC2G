@@ -38,13 +38,19 @@ ANY_VALUE = "Any"
 class Config:
     """Configuration class for PyFRC2G"""
 
-    def __init__(self):
-        self.gateway_type = GATEWAY_TYPE
-        # Use gateway name, or extract from URL if not set
-        if GATEWAY_NAME != "<GW_NAME>":
+    def __init__(self, gateway_name_override=None, gateway_type_override=None):
+        """
+        Args:
+            gateway_name_override: Override gateway name (e.g. from --gateway-name or backup)
+            gateway_type_override: Override gateway type (e.g. from backup file detection)
+        """
+        self.gateway_type = gateway_type_override or GATEWAY_TYPE
+        # Use override, then config, or will be set from URL/backup
+        if gateway_name_override:
+            self.gateway_name = gateway_name_override
+        elif GATEWAY_NAME != "<GW_NAME>":
             self.gateway_name = GATEWAY_NAME
         else:
-            # Will be set after determining firewall host
             self.gateway_name = None
 
         # pfSense - Build URL from base URL
@@ -65,19 +71,16 @@ class Config:
         self.opns_key = OPNS_KEY
         self.interfaces = INTERFACES
 
-        # Determine output directory from firewall address
+        # Determine output directory from firewall address (or use gateway_name if set)
         from modules.utils import extract_host_from_url, extract_base_url
 
-        if self.gateway_type.lower() == "pfsense":
-            base_url = self.pfs_base_url if self.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.pfs_url)
-        else:
-            base_url = self.opns_base_url if self.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.opns_url)
-
-        firewall_host = extract_host_from_url(base_url)
-
-        # Set gateway_name if not already set
         if self.gateway_name is None:
-            self.gateway_name = firewall_host
+            if self.gateway_type.lower() == "pfsense":
+                base_url = self.pfs_base_url if self.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.pfs_url)
+            else:
+                base_url = self.opns_base_url if self.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.opns_url)
+            firewall_host = extract_host_from_url(base_url)
+            self.gateway_name = firewall_host if firewall_host != "unknown" else "gateway"
 
         # Path to the output directory and CSV and MD5 files
         self.graph_output_dir = f"results/{self.gateway_name}"

@@ -58,6 +58,30 @@ def extract_host_from_url(url):
         return "unknown"
 
 
+def get_source_val(entry):
+    """Extract source from rule entry (API dict or XML backup format)."""
+    src = entry.get("source")
+    if isinstance(src, dict):
+        return src.get("network") or src.get("address") or src.get("any")
+    return src or entry.get("source_net")
+
+
+def get_dest_val(entry):
+    """Extract destination from rule entry (API dict or XML backup format)."""
+    dst = entry.get("destination")
+    if isinstance(dst, dict):
+        return dst.get("network") or dst.get("address") or dst.get("any")
+    return dst or entry.get("destination_net") or entry.get("%destination_net")
+
+
+def get_port_val(entry):
+    """Extract destination port from rule entry."""
+    dst = entry.get("destination")
+    if isinstance(dst, dict):
+        return dst.get("port")
+    return entry.get("destination_port")
+
+
 def map_value(value, field=None, any_value="Any"):
     """
     Map values using API aliases.

@@ -30,6 +30,7 @@ setup(
     ],
     python_requires=">=3.7",
     install_requires=[
+        "argparse>=1.4.0",
         "requests>=2.25.0",
         "graphviz>=0.16",
         "reportlab>=3.6.0",

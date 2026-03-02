@@ -5,6 +5,8 @@ Unified Python package to convert **pfSense** and **OPNSense** firewall rules in
 ![pfSense Example](./img/convert-rules-to-graph.png)
 ![OPNSense Example](./img/opnsense.png)
 
+**Quick start:** Configure `modules/config.py` then run `python pyfrc2g.py` (API mode), or run `python pyfrc2g.py --backup config.xml` to use an XML backup without API config.
+
 ## 👋 Overview
 
 PyFRC2G was designed to meet two main objectives:
@@ -16,11 +18,13 @@ PyFRC2G was designed to meet two main objectives:
 
 ### Core Features
 
+* **Two Input Modes**: Fetch rules via **API** (pfSense/OPNSense) or read from **XML backup** (config.xml)
 * **Unified Support**: Single package for both pfSense and OPNSense
 * **Automatic Interface Detection**: Auto-detects all available interfaces for OPNSense
-* **API-Based Alias Mapping**: Retrieves all aliases directly from firewall API (no config file needed)
+* **API-Based Alias Mapping**: Retrieves all aliases from firewall API or from the backup XML
 * **Per-Interface Output**: Generates separate CSV and PDF files for each interface
 * **Smart Change Detection**: Only regenerates graphs when rules have changed (MD5 comparison)
+* **Configuration Check**: Validates `modules/config.py` before API mode (optional bypass with `--skip-config-check`)
 * **Modular Architecture**: Clean, maintainable, and extensible codebase
 
 ### Technical Features
@@ -95,9 +99,11 @@ python pyfrc2g.py
 
 ## ⚙️ Configuration
 
+Configuration is required only for **API mode**. When using `--backup`, no API config is needed.
+
 ### 1. Edit Configuration File
 
-Edit `pyfrc2g/modules/config.py` to configure your gateway:
+Edit `modules/config.py` to configure your gateway:
 
 #### For pfSense:
 
@@ -129,9 +135,13 @@ INTERFACES = ["wan", "lan", "opt1", "opt2"]
 GATEWAY_NAME = "OPNS01"  # Display name for gateway (used in labels)
 ```
 
-### 2. CISO Assistant Integration (Optional)
+### 2. Configuration Check (API Mode)
 
-If you want to automatically upload generated PDFs to CISO Assistant as evidence revisions, configure the following in `pyfrc2g/config.py`:
+Before running in API mode, the tool checks that `PFS_BASE_URL`/`PFS_TOKEN` (pfSense) or `OPNS_BASE_URL`/`OPNS_KEY`/`OPNS_SECRET` (OPNSense) are not left as placeholders. If the config is invalid, the script exits with instructions. Use `--skip-config-check` to bypass (e.g. in scripts).
+
+### 3. CISO Assistant Integration (Optional)
+
+If you want to automatically upload generated PDFs to CISO Assistant as evidence revisions, configure the following in `modules/config.py`:
 
 ```python
 # CISO Assistant Configuration
@@ -144,30 +154,72 @@ CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID> # Evidence ID from CISO Assistant
 
 **Note:** Leave these as default values (`<CISO_ASSISTANT_ADDRESS>`, etc.) to disable CISO Assistant integration.
 
-### 3. No Config File Needed! 🎉
+### 4. Aliases (API Mode)
 
-**The package automatically retrieves all aliases from the firewall API:**
+**In API mode, the package automatically retrieves all aliases from the firewall API:**
 - Interface names and descriptions
 - Network aliases
 - Address aliases
 - Port aliases
 
-No manual configuration file is required! Everything is fetched directly from your firewall's API.
+No manual alias mapping is required. In **backup mode**, aliases are read from the XML file.
 
 ## 🚀 Usage
 
+### Command-Line Options (argparse)
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--api` | `-a` | Fetch rules from firewall API (default if no mode) |
+| `--backup FILE` | `-b` | Read rules from XML backup (pfSense or OPNSense config.xml) |
+| `--gateway-name NAME` | `-g` | Gateway display name (for backup or when not using API) |
+| `--skip-config-check` | | Skip configuration check before API mode |
+| `--debug` | `-d` | Enable debug logging |
+| `--verbose` | `-v` | Verbose output (same as --debug) |
+
 ### Basic Usage
 
-#### As a Script:
+#### Mode API (default)
+
+Configure `modules/config.py`, then run:
 
 ```bash
 python pyfrc2g.py
+# or explicitly
+python pyfrc2g.py --api
+```
+
+Before running, a **configuration check** ensures that API URL and credentials are set. If the config is still using placeholders, the tool exits with a clear message. Use `--backup` to work without API config, or `--skip-config-check` to bypass (not recommended).
+
+#### Mode XML Backup
+
+Use a pfSense or OPNSense backup file (e.g. from Diagnostics > Backup & Restore). No API config needed.
+
+```bash
+python pyfrc2g.py --backup config-backup.xml
+
+# Optional: set gateway name (otherwise derived from filename)
+python pyfrc2g.py --backup config-backup.xml --gateway-name my-firewall
+```
+
+The tool detects automatically whether the backup is pfSense or OPNSense and parses rules and aliases from the XML. PDFs are generated the same way as in API mode.
+
+#### Other Examples
+
+```bash
+# Debug / verbose
+python pyfrc2g.py --api --debug
+python pyfrc2g.py --backup config.xml --verbose
+
+# Bypass config check (e.g. in scripts)
+python pyfrc2g.py --api --skip-config-check
 ```
 
 #### As an Installed Package:
 
 ```bash
 pyfrc2g
+pyfrc2g --backup config.xml
 ```
 
 #### As a Python Module:
@@ -196,18 +248,25 @@ graph_generator.generate_graphs(csv_path, output_dir)
 
 ### What the Script Does
 
-1. Connects to your gateway (pfSense or OPNSense)
-2. Fetches all aliases from the API
-3. Retrieves all firewall rules from all interfaces
+**Mode API**
+1. Runs a configuration check (unless `--skip-config-check` or `--backup` is used)
+2. Connects to your gateway (pfSense or OPNSense)
+3. Fetches all aliases and firewall rules from the API
 4. Auto-detects interfaces (for OPNSense, if not specified)
+
+**Mode Backup**
+1. Parses the XML backup (pfSense or OPNSense), extracts rules and aliases
+2. No API call; gateway type and name come from the file or `--gateway-name`
+
+**Common steps**
 5. Generates a temporary CSV file with all rules
 6. Compares with previous version (MD5 checksum)
-7. If changes detected, generates graphs and PDFs
+7. If changes detected, generates graphs and PDFs (Graphviz + ReportLab)
 8. Uploads PDFs to CISO Assistant (if configured)
 
 ### Generated Files
 
-The script generates files in `results/graphs_<GATEWAY_NAME>/`:
+The script generates files in `results/<GATEWAY_NAME>/`:
 
 #### Global Files:
 - `<GATEWAY_NAME>_FLOW_MATRIX.pdf` - PDF with all interfaces (one page per interface)
@@ -222,7 +281,7 @@ The script generates files in `results/graphs_<GATEWAY_NAME>/`:
 ### Example Output Structure
 
 ```
-results/graphs_PFS01/
+results/PFS01/
 ├── PFS01_FLOW_MATRIX.pdf              # Global PDF (all interfaces)
 ├── PFS01_wan_FLOW_MATRIX.pdf          # WAN interface PDF
 ├── PFS01_wan_flows.csv                # WAN interface CSV
@@ -250,17 +309,20 @@ The generated PDFs contain:
 ## 🏗️ Project Structure
 
 ```
-PyFRC2G-main/
-├── pyfrc2g/                    # Main package
+PyFRC2G/
+├── modules/                   # Main package
 │   ├── __init__.py            # Package initialization and exports
 │   ├── config.py              # Configuration management
+│   ├── config_checker.py      # Configuration validation (API mode)
 │   ├── api_client.py          # API client for firewalls
+│   ├── xml_parser.py          # XML backup parser (pfSense/OPNSense)
 │   ├── graph_generator.py     # Graph and PDF generation
 │   ├── ciso_client.py         # CISO Assistant integration
 │   ├── utils.py               # Utility functions
 │   └── main.py                # Main execution logic
-├── pyfrc2g.py                 # Entry point script
+├── pyfrc2g.py                 # Entry point script (argparse)
 ├── setup.py                   # Package installation
+├── requirements.txt           # Python dependencies
 ├── README.md                  # This file
 └── img/                       # Example images
 ```
@@ -273,17 +335,27 @@ PyFRC2G-main/
 - API credentials management
 - Output paths configuration
 
+#### `config_checker.py`
+- Validates `modules/config.py` before running in API mode
+- Ensures API URL and credentials are not placeholders
+- Optional prompt to continue on warnings; `--skip-config-check` to bypass
+
 #### `api_client.py`
 - `APIClient` class for firewall API interactions
 - Alias retrieval (interfaces, networks, addresses, ports)
 - Firewall rules retrieval
 - Interface auto-detection for both pfSense and OPNSense
 
+#### `xml_parser.py`
+- Parses pfSense and OPNSense XML backup files (config.xml)
+- Auto-detects backup type from root element
+- Extracts rules and aliases in API-compatible format
+
 #### `graph_generator.py`
 - `GraphGenerator` class for graph and PDF generation
 - CSV parsing and grouping by interface
 - Graphviz graph creation
-- PDF generation from PNG files
+- PDF generation from PNG files (ReportLab)
 
 #### `utils.py`
 - Utility functions (MD5, URL extraction, filename sanitization)
@@ -291,7 +363,8 @@ PyFRC2G-main/
 - Global API alias maps management
 
 #### `main.py`
-- Main execution function
+- Main execution function (API or backup mode)
+- Configuration check for API mode
 - Orchestrates the entire workflow
 - Change detection using MD5
 - File cleanup
@@ -319,9 +392,16 @@ INFO:root:✓ Auto-detected interfaces: ['wan', 'lan', 'opt1', 'opt2']
 
 ## 🛠️ Troubleshooting
 
+### Configuration check fails (API mode)
+
+If you see *"Configuration is missing or invalid"*:
+- Edit `modules/config.py` and set `PFS_BASE_URL`/`PFS_TOKEN` (pfSense) or `OPNS_BASE_URL`/`OPNS_KEY`/`OPNS_SECRET` (OPNSense) to real values.
+- Or use `--backup config.xml` to read from an XML backup instead of the API.
+- Or use `--skip-config-check` only if you are sure the config is valid.
+
 ### Error: "Could not auto-detect interfaces"
 
-**Solution**: Manually specify interfaces in `pyfrc2g/config.py`:
+**Solution**: Manually specify interfaces in `modules/config.py`:
 
 ```python
 INTERFACES = ["wan", "lan", "opt1"]
@@ -376,41 +456,38 @@ brew install graphviz
 
 ## 🔄 Migration from Old Versions
 
-If you were using version 1.x:
+If you were using an older version:
 
-1. **Configuration**: Edit `pyfrc2g/config.py` instead of `pyfrc2g.py`
-2. **Config File**: **No longer needed!** All aliases are fetched from API
-3. **Interfaces**: For OPNSense, you can leave `INTERFACES = []` for auto-detection
-4. **Usage**: Script usage remains the same: `python pyfrc2g.py`
+1. **Configuration**: Edit `modules/config.py`; a config check runs in API mode unless you use `--skip-config-check`.
+2. **Aliases**: In API mode, aliases are fetched from the API; in backup mode, they are read from the XML.
+3. **Interfaces**: For OPNSense, you can leave `INTERFACES = []` for auto-detection.
+4. **Usage**: Run `python pyfrc2g.py` or `python pyfrc2g.py --api` for API; `python pyfrc2g.py --backup config.xml` for XML backup.
 
-## 🆕 What's New in v2.0
+## 🆕 What's New (recent)
 
 ### Major Improvements
 
-- ✅ **Modular Architecture**: Clean, organized codebase with separate modules
-- ✅ **Fully English Codebase**: All code, comments, and messages in English
-- ✅ **API-Based Alias Retrieval**: No config file required
-- ✅ **Per-Interface File Generation**: Separate CSV and PDF for each interface
-- ✅ **Optimized Code**: Reduced code size, improved performance
-- ✅ **Better Error Handling**: More informative error messages
-- ✅ **Package Installation**: Can be installed as a Python package
-- ✅ **Module Usage**: Can be imported and used as a Python module
-- ✅ **CISO Assistant Integration**: Automatic upload of generated PDFs to CISO Assistant as evidence revisions
+- **Modular architecture** — Codebase split into dedicated modules (`config`, `api_client`, `xml_parser`, `graph_generator`, `ciso_client`, etc.)
+- **Two input modes** — API (pfSense/OPNSense) and XML backup (`config.xml`) with `--api` / `--backup`
+- **CLI (argparse)** — `--api`, `--backup`, `--gateway-name`, `--skip-config-check`, `--debug` / `--verbose`
+- **Configuration check** — Validates config before API mode (`config_checker.py`, overridable with `--skip-config-check`)
+- **XML backup parser** — Rules and aliases read from pfSense/OPNSense backup files without API
+- **API-based aliases** — No manual alias file in API mode; aliases fetched from API
+- **Per-interface output** — Separate CSV and PDF per interface
+- **CISO Assistant** — Automatic upload of generated PDFs as evidence revisions
+- **Change detection** — Graphs regenerated only when rules change (MD5 comparison)
+- **OPNSense support** — Full support for OPNSense firewalls
 
 ## 📝 Todo
 
-Future improvements and features planned for PyFRC2G:
+Planned improvements:
 
-- [ ] **Code Improvements**: Continue improving code quality and structure
-- [x] **Automated Change Detection**: Graphs are regenerated only when rules have changed (MD5 comparison) ✅
-- [ ] **Admin Notifications**: Notify administrators when graphs are generated
-- [ ] **Destination VLAN Display**: Add the destination VLAN before a destination host in the graphical view
-- [x] **OPNSense Support**: Full support for OPNSense firewalls ✅
-- [x] **CISO Assistant Integration**: Automatic upload of PDFs to CISO Assistant as evidence revisions ✅
-- [ ] **Rule Metadata**: Retrieve timestamps and authors for rule creation/modification
-- [ ] **Enhanced Error Reporting**: More detailed error messages and recovery suggestions
-- [ ] **Configuration Validation**: Validate configuration before execution
-- [ ] **Multiple Gateway Support**: Support for processing multiple gateways in a single run
+-  **Code improvements** — Further improve code quality and structure
+-  **Admin notifications** — Notify administrators when graphs are generated
+-  **Destination VLAN display** — Show destination VLAN before de host in the graph
+-  **Rule metadata** — Retrieve timestamps and authors for rule creation/modification
+-  **Enhanced error reporting** — More detailed error messages and recovery suggestions
+-  **Multiple gateway support** — Process multiple gateways in a single run
 
 ## 🤝 Contributing
 

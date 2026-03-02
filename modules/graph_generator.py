@@ -13,6 +13,18 @@ from modules.utils import normalize_ports, safe_filename, map_value, format_alia
 from modules.config import FLOATING_RULES_LABELS, UNKNOWN_LABEL, DISABLED_LABEL, ANY_VALUE
 
 
+def _clean_label(s, default=UNKNOWN_LABEL):
+    """Remove HTML-like angle brackets from label; return default if empty."""
+    if not s:
+        return default
+    return str(s).replace("<", "").replace(">", "").strip() or default
+
+
+def _host_name_from_output_dir(output_dir):
+    """Extract host name from output directory path (e.g. results/host/ -> host)."""
+    return os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
+
+
 class GraphGenerator:
     """Graph generator for firewall rules"""
     
@@ -48,10 +60,7 @@ class GraphGenerator:
                         + hashlib.md5(interface_safe.encode()).hexdigest()[:8]
                 )
             logging.info(f"Processing interface: {interface_name} ({len(rules)} rules)")
-            
-            # Extract host from output directory path (results/host/)
-            host_name = os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
-            
+            host_name = _host_name_from_output_dir(output_dir)
             # Create CSV file
             interface_csv = os.path.join(output_dir, f"{host_name}_{interface_safe}_flows.csv")
             with open(interface_csv, "w", newline="", encoding="utf-8") as f:
@@ -109,13 +118,11 @@ class GraphGenerator:
                 destination = (row.get("DESTINATION") or "").strip()
                 comment = (row.get("COMMENT") or "").strip()
                 disabled = (row.get("DISABLED") or "").strip()
-                
-                # Create labels with alias details (clean HTML-like characters)
-                source_clean = str(source).replace('<', '').replace('>', '') if source else UNKNOWN_LABEL
-                gateway_clean = str(gateway).replace('<', '').replace('>', '') if gateway else UNKNOWN_LABEL
-                action_clean = str(action).replace('<', '').replace('>', '') if action else UNKNOWN_LABEL
-                destination_clean = str(destination).replace('<', '').replace('>', '') if destination else UNKNOWN_LABEL
-                comment_clean = str(comment).replace('<', '').replace('>', '') if comment else ""
+                source_clean = _clean_label(source)
+                gateway_clean = _clean_label(gateway)
+                action_clean = _clean_label(action)
+                destination_clean = _clean_label(destination)
+                comment_clean = _clean_label(comment, default="")
                 rule_number = (row.get("RULE ORDER") or "").strip()
                 
                 # Format labels with alias details if available
@@ -170,10 +177,7 @@ class GraphGenerator:
             g.attr("node", fontname="Helvetica,Arial,sans-serif", fontsize="11", shape="record")
             g.attr("edge", fontname="Helvetica,Arial,sans-serif")
             g.attr(rankdir="LR")
-            # Escape HTML-like characters in gateway name for Graphviz (remove < > characters)
-            gateway_label = gateway.replace('<', '').replace('>', '').strip()
-            if not gateway_label:
-                gateway_label = "Gateway"
+            gateway_label = _clean_label(gateway, default="Gateway")
             g.attr(label=f"<<b>GATEWAY : {gateway_label}</b>>", labelloc="t", fontsize="14", color="#8888ff")
             
             for source, cluster in sources.items():
@@ -205,33 +209,21 @@ class GraphGenerator:
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.utils import ImageReader
-            
-            # Get PNG files
+
+            host_name = _host_name_from_output_dir(output_dir)
+            interface_safe = safe_filename(interface_filter) if interface_filter else None
             if interface_filter:
-                interface_safe = safe_filename(interface_filter)
                 all_pngs = sorted(glob.glob(os.path.join(output_dir, "*.png")))
-                png_files = [png for png in all_pngs 
-                            if interface_safe in os.path.basename(png).replace(".gv.png", "").replace(".png", "")]
-                png_files = sorted(png_files)
+                png_files = [png for png in all_pngs
+                             if interface_safe in os.path.basename(png).replace(".gv.png", "").replace(".png", "")]
             else:
                 png_files = sorted(glob.glob(os.path.join(output_dir, "*.png")))
-            
+
             if not png_files:
                 logging.warning(f"No PNG files found for interface {interface_filter}" if interface_filter else "No PNG files found for PDF")
                 return
-            
-            # Extract host from output directory path (results/host/)
-            host_name = os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
-            
-            # PDF path
-            if interface_filter:
-                interface_safe = safe_filename(interface_filter)
-                pdf_path = os.path.join(output_dir, f"{host_name}_{interface_safe}_FLOW_MATRIX.pdf")
-            else:
-                pdf_path = os.path.join(output_dir, f"{host_name}_FLOW_MATRIX.pdf")
-            
-            # Extract host from output directory path
-            host_name = os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
+
+            pdf_path = os.path.join(output_dir, f"{host_name}_{interface_safe}_FLOW_MATRIX.pdf") if interface_safe else os.path.join(output_dir, f"{host_name}_FLOW_MATRIX.pdf")
             
             # Create PDF
             c = canvas.Canvas(pdf_path, pagesize=A4)
