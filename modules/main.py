@@ -1,5 +1,5 @@
 """
-Main execution module for PyFRC2G
+Main execution module for PyFRC2G.
 """
 
 import os
@@ -31,7 +31,7 @@ def _gateway_from_entry(entry, config):
 
 
 def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
-    """Convert one rule entry to a CSV row dict (pfSense or OPNSense)."""
+    """Convert one rule entry to a CSV row dict for pfSense or OPNSense."""
     if gateway_type == "pfsense":
         return {
             "SOURCE": map_value(entry.get("source"), "source", config.any_value),
@@ -45,23 +45,25 @@ def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
             "FLOATING": "True" if entry.get("floating") else "False",
             "RULE ORDER": rule_order,
         }
-    # OPNSense
+    # OPNSense: action/type (pass, block, reject).
+    action = entry.get("action") or entry.get("type")
+    disabled = not entry.get("enabled", True)  # OPNsense 26.1+ uses <enabled>0</enabled> for disabled rules.
     return {
         "SOURCE": map_value(get_source_val(entry), "source", config.any_value),
         "GATEWAY": gateway,
-        "ACTION": map_value(entry.get("action"), None, config.any_value),
+        "ACTION": map_value(action, None, config.any_value),
         "PROTOCOL": map_value(entry.get("protocol"), None, config.any_value),
         "PORT": map_value(get_port_val(entry), "destination_port", config.any_value),
         "DESTINATION": map_value(get_dest_val(entry), "destination", config.any_value),
         "COMMENT": map_value(entry.get("description"), None, config.any_value),
-        "DISABLED": "False",
+        "DISABLED": "True" if disabled else "False",
         "FLOATING": "True" if not entry.get("interface") else "False",
         "RULE ORDER": rule_order,
     }
 
 
 def _run_graph_and_pdf_generation(config, graph_generator, ciso_client):
-    """Generate global + per-interface graphs/PDFs, cleanup PNGs, optionally upload to CISO."""
+    """Generate global and per-interface graphs/PDFs, remove temporary PNGs, optionally upload to CISO."""
     os.makedirs(config.graph_output_dir, exist_ok=True)
     host_name = os.path.basename(config.graph_output_dir) or "gateway"
     global_csv = os.path.join(config.graph_output_dir, f"{host_name}_ALL_flows.csv")
@@ -92,12 +94,13 @@ def _run_graph_and_pdf_generation(config, graph_generator, ciso_client):
 
 
 def main(args=None):
-    """Main execution function.
-    
-    Args:
-        args: Optional argparse.Namespace from pyfrc2g.py (for --backup, --gateway-name)
     """
-    # Set up logging level (DEBUG if --debug flag is present)
+    Main execution function.
+
+    Args:
+        args: Optional argparse.Namespace from pyfrc2g.py (e.g. --backup, --gateway-name).
+    """
+    # Set up logging level (DEBUG if --debug or --verbose is present).
     log_level = logging.DEBUG if ("--debug" in sys.argv or (args and (args.debug or args.verbose))) else logging.INFO
     logging.basicConfig(
         level=log_level,
@@ -111,7 +114,7 @@ def main(args=None):
     
     use_backup = bool(backup_file)
     
-    # Configuration check for API mode
+    # Configuration check for API mode.
     if not use_backup:
         from modules.config_checker import run_configuration_check
         print("=== Configuration check (API mode) ===")
@@ -131,7 +134,7 @@ def main(args=None):
             return 1
         if not entries:
             logging.warning("No rules found in backup file - output may be empty")
-        # Gateway name: --gateway-name > hostname from XML > filename stem
+        # Gateway name: --gateway-name overrides hostname from XML, then filename stem.
         if not gateway_name_override:
             gateway_name_override = gateway_name_from_xml or Path(backup_file).stem
         config = Config(gateway_name_override=gateway_name_override, gateway_type_override=gateway_type)
@@ -160,7 +163,7 @@ def main(args=None):
         elif config.gateway_type.lower() == "opnsense":
             logging.debug(f"OPNSense Base URL: {config.opns_base_url}, Rules URL: {config.opns_url}")
 
-    # Create output_dir with gateway name
+    # Create output directory with gateway name.
     if not os.path.exists(config.graph_output_dir):
         os.makedirs(config.graph_output_dir)
 
@@ -176,7 +179,7 @@ def main(args=None):
     else:
         logging.warning(f"No firewall rules retrieved from {config.gateway_type}")
 
-    # Extract rules to CSV
+    # Extract rules to CSV.
     with open(config.csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=config.csv_fieldnames)
         writer.writeheader()
@@ -188,7 +191,7 @@ def main(args=None):
     
     logging.info(f"✓ CSV file generated: {config.csv_file}")
     
-    # Check for changes using MD5 (skip in backup mode: always generate PDF from XML)
+    # Check for changes using MD5 (backup mode always generates PDF from XML).
     prev_md5 = ""
     if os.path.exists(config.md5_file):
         with open(config.md5_file, "r") as f:
@@ -209,7 +212,7 @@ def main(args=None):
     else:
         logging.info("No rules created or modified")
     
-    # Cleanup CSV
+    # Remove temporary CSV.
     if os.path.exists(config.csv_file):
         os.remove(config.csv_file)
         logging.info("Temporary CSV file deleted")

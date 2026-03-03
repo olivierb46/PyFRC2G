@@ -1,33 +1,33 @@
 """
-Configuration module for PyFRC2G
+Configuration module for PyFRC2G.
 """
 
-# Gateway type: "pfsense" or "opnsense"
+# Gateway type: "pfsense" or "opnsense".
 GATEWAY_TYPE = "pfsense"
 
-# pfSense Configuration
+# pfSense configuration.
 PFS_BASE_URL = "https://<PFS_ADDRESS>"
 PFS_TOKEN = "<YOUR_PFSENSE_API_TOKEN>"
 
-# OPNSense Configuration
+# OPNSense configuration.
 OPNS_BASE_URL = "https://<OPNS_ADDRESS>"
 OPNS_KEY = "<YOUR_OPNSENSE_API_KEY>"
 OPNS_SECRET = "<YOUR_OPNSENSE_API_SECRET>"
-INTERFACES = []  # Auto-detect if empty, e.g., ["wan", "lan", "opt1", "opt2"]
+INTERFACES = []  # Auto-detect if empty; e.g. ["wan", "lan", "opt1", "opt2"].
 
-# Common Configuration
-GATEWAY_NAME = "<GW_NAME>"  # Display name for gateway (used in labels)
-# Output directory will be automatically set to results/<ip_or_domain>/
+# Common configuration.
+GATEWAY_NAME = "<GW_NAME>"  # Display name for gateway (used in labels).
+# Output directory is set to results/<ip_or_domain>/.
 
-# CISO Assistant Configuration (optional)
-# Leave as default values to disable CISO Assistant integration
+# CISO Assistant configuration (optional).
+# Leave default values to disable CISO Assistant integration.
 CISO_URL = "https://<CISO_ASSISTANT_ADDRESS>"
 CISO_TOKEN = "<CISO_ASSISTANT_TOKEN>"
 CISO_EVIDENCE_PATH = f"{CISO_URL}/api/evidence-revisions/"
-CISO_FORLDER_ID = "<CISO_FOLDER_ID>" # Domain ID from CISO Assistant
-CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID>"  # Evidence ID from CISO Assistant
+CISO_FORLDER_ID = "<CISO_FOLDER_ID>"  # Folder ID from CISO Assistant.
+CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID>"  # Evidence ID from CISO Assistant.
 
-# Constants
+# Constants.
 CSV_FIELDNAMES = ["SOURCE", "GATEWAY", "ACTION", "PROTOCOL", "PORT", "DESTINATION", "COMMENT", "DISABLED", "FLOATING", "RULE ORDER"]
 FLOATING_RULES_LABELS = ["Floating-rules", "Regles-flottantes", "Règles flottantes"]
 UNKNOWN_LABEL = "<unknown>"
@@ -36,16 +36,16 @@ ANY_VALUE = "Any"
 
 
 class Config:
-    """Configuration class for PyFRC2G"""
+    """Configuration class for PyFRC2G."""
 
     def __init__(self, gateway_name_override=None, gateway_type_override=None):
         """
         Args:
-            gateway_name_override: Override gateway name (e.g. from --gateway-name or backup)
-            gateway_type_override: Override gateway type (e.g. from backup file detection)
+            gateway_name_override: Override gateway name (e.g. from --gateway-name or backup).
+            gateway_type_override: Override gateway type (e.g. from backup file detection).
         """
         self.gateway_type = gateway_type_override or GATEWAY_TYPE
-        # Use override, then config, or will be set from URL/backup
+        # Use override, then config value, or set from URL/backup later.
         if gateway_name_override:
             self.gateway_name = gateway_name_override
         elif GATEWAY_NAME != "<GW_NAME>":
@@ -53,7 +53,7 @@ class Config:
         else:
             self.gateway_name = None
 
-        # pfSense - Build URL from base URL
+        # pfSense: build URL from base URL.
         self.pfs_base_url = PFS_BASE_URL
         if PFS_BASE_URL != "https://<PFS_ADDRESS>":
             self.pfs_url = f"{PFS_BASE_URL}/api/v2/firewall/rules"
@@ -61,7 +61,7 @@ class Config:
             self.pfs_url = "https://<PFS_ADDRESS>/api/v2/firewall/rules"
         self.pfs_token = PFS_TOKEN
 
-        # OPNSense - Build URL from base URL
+        # OPNSense: build URL from base URL.
         self.opns_base_url = OPNS_BASE_URL
         if OPNS_BASE_URL != "https://<OPNS_ADDRESS>":
             self.opns_url = f"{OPNS_BASE_URL}/api/firewall/filter/search_rule"
@@ -71,7 +71,7 @@ class Config:
         self.opns_key = OPNS_KEY
         self.interfaces = INTERFACES
 
-        # Determine output directory from firewall address (or use gateway_name if set)
+        # Determine output directory from firewall address (or gateway_name if set).
         from modules.utils import extract_host_from_url, extract_base_url
 
         if self.gateway_name is None:
@@ -82,19 +82,19 @@ class Config:
             firewall_host = extract_host_from_url(base_url)
             self.gateway_name = firewall_host if firewall_host != "unknown" else "gateway"
 
-        # Path to the output directory and CSV and MD5 files
+        # Paths for output directory, CSV, and MD5 file.
         self.graph_output_dir = f"results/{self.gateway_name}"
         self.csv_file = f"{self.graph_output_dir}/output_{self.gateway_name}.csv"
         self.md5_file = f"{self.graph_output_dir}/md5sum.txt"
 
-        # CISO Assistant Configuration
+        # CISO Assistant configuration.
         self.ciso_url = CISO_URL
         self.ciso_token = CISO_TOKEN
         self.ciso_evidence_path = CISO_EVIDENCE_PATH
         self.ciso_folder_id = CISO_FORLDER_ID
         self.ciso_evidence_id = CISO_EVIDENCE_ID
 
-        # Constants
+        # Constants.
         self.csv_fieldnames = CSV_FIELDNAMES
         self.floating_rules_labels = FLOATING_RULES_LABELS
         self.unknown_label = UNKNOWN_LABEL

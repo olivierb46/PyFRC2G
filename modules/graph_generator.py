@@ -1,5 +1,5 @@
 """
-Graph generation module for PyFRC2G
+Graph generation module for PyFRC2G.
 """
 
 import os
@@ -14,29 +14,29 @@ from modules.config import FLOATING_RULES_LABELS, UNKNOWN_LABEL, DISABLED_LABEL,
 
 
 def _clean_label(s, default=UNKNOWN_LABEL):
-    """Remove HTML-like angle brackets from label; return default if empty."""
+    """Return label with angle brackets removed, or default if empty."""
     if not s:
         return default
     return str(s).replace("<", "").replace(">", "").strip() or default
 
 
 def _host_name_from_output_dir(output_dir):
-    """Extract host name from output directory path (e.g. results/host/ -> host)."""
+    """Return host name from output directory path (e.g. results/host/ -> host)."""
     return os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
 
 
 class GraphGenerator:
-    """Graph generator for firewall rules"""
-    
+    """Graph generator for firewall rules."""
+
     def __init__(self, config):
         self.config = config
     
     def generate_by_interface(self, csv_path, output_dir):
-        """Generate separate CSV and PDF files for each interface."""
+        """Generate separate CSV and PDF files per interface."""
         os.makedirs(output_dir, exist_ok=True)
         rules_by_interface = OrderedDict()
         
-        # Group rules by interface
+        # Group rules by interface.
         with open(csv_path, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -47,7 +47,7 @@ class GraphGenerator:
                     rules_by_interface[interface_name] = []
                 rules_by_interface[interface_name].append(row)
         
-        # Generate files for each interface
+        # Generate files for each interface.
         for interface_name, rules in rules_by_interface.items():
             if not rules:
                 continue
@@ -61,7 +61,7 @@ class GraphGenerator:
                 )
             logging.info(f"Processing interface: {interface_name} ({len(rules)} rules)")
             host_name = _host_name_from_output_dir(output_dir)
-            # Create CSV file
+            # Create CSV file.
             interface_csv = os.path.join(output_dir, f"{host_name}_{interface_safe}_flows.csv")
             with open(interface_csv, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=self.config.csv_fieldnames)
@@ -70,19 +70,19 @@ class GraphGenerator:
             
             logging.info(f"  ✓ CSV created: {interface_csv}")
             
-            # Generate graph and PDF
+            # Generate graph and PDF.
             self.generate_graphs(interface_csv, output_dir, interface_name)
         
         logging.info(f"✓ Generated files for {len(rules_by_interface)} interfaces")
     
     def generate_graphs(self, csv_path, output_dir, interface_filter=None):
-        """Parse CSV and generate graphs. If interface_filter is specified, only generate for that interface."""
+        """Parse CSV and generate graphs; if interface_filter is set, only for that interface."""
         os.makedirs(output_dir, exist_ok=True)
         flows_by_gateway = OrderedDict()
         next_id = 0
         
         def get_node(nodes, key, label=None, color=None, force_unique=False):
-            """Create or retrieve a node, factorized by cluster/source unless force_unique."""
+            """Create or retrieve a node (by cluster/source unless force_unique)."""
             nonlocal next_id
             actual_key = f"{key}__{next_id}" if force_unique else key
             if actual_key not in nodes:
@@ -91,14 +91,14 @@ class GraphGenerator:
             return nodes[actual_key][0]
         
         def get_action_color(action):
-            """Get color for action type."""
+            """Return color for action type (pass/block/reject)."""
             return "#a3f7a3" if action == "PASS" else "#f7a3a3" if action == "BLOCK" or action == "REJECT" else None
         
         def get_disabled_color(disabled):
-            """Get color for disabled rules."""
+            """Return color for disabled rules."""
             return "#ffcc00" if disabled == "True" else None
         
-        # Parse CSV and build graph structure
+        # Parse CSV and build graph structure.
         with open(csv_path, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -106,7 +106,7 @@ class GraphGenerator:
                 source = (row.get("SOURCE") or "").strip()
                 gateway = (row.get("GATEWAY") or "").strip() if floating not in ["True", "1"] else "Floating-rules"
                 
-                # Filter by interface if specified
+                # Filter by interface if specified.
                 if interface_filter:
                     interface_name = gateway.split("/", 1)[1] if "/" in gateway else gateway
                     if interface_name != interface_filter:
@@ -125,7 +125,7 @@ class GraphGenerator:
                 comment_clean = _clean_label(comment, default="")
                 rule_number = (row.get("RULE ORDER") or "").strip()
                 
-                # Format labels with alias details if available
+                # Format labels with alias details if available.
                 source_formatted = format_alias_label(source, source_clean)
                 destination_formatted = format_alias_label(destination, destination_clean)
                 port_formatted = format_alias_label(ports, ports)
@@ -141,7 +141,7 @@ class GraphGenerator:
                 else:
                     destination_label = f"Rule #{rule_number} | {destination_formatted} | {comment_clean}" if comment_clean else f"Rule #{rule_number} | VLAN | {destination_formatted}"
                 
-                # Initialize cluster/source
+                # Initialize cluster/source.
                 if gateway not in flows_by_gateway:
                     flows_by_gateway[gateway] = OrderedDict()
                 if source not in flows_by_gateway[gateway]:
@@ -149,7 +149,7 @@ class GraphGenerator:
                 
                 cluster = flows_by_gateway[gateway][source]
                 
-                # Create nodes
+                # Create nodes.
                 n_source = get_node(cluster["nodes"], source_label)
                 n_gateway = get_node(cluster["nodes"], gateway_label)
                 n_action = get_node(cluster["nodes"], action_label, color=get_action_color(action))
@@ -163,12 +163,12 @@ class GraphGenerator:
                                         force_unique=not is_floating, 
                                         color=get_disabled_color(disabled))
                 
-                # Create edges
+                # Create edges.
                 edges = [(n_source, n_gateway), (n_gateway, n_action), (n_action, n_proto), 
                         (n_proto, n_port), (n_port, n_destination)]
                 cluster["edges"].update(edges)
         
-        # Generate graphs
+        # Generate graphs.
         for gateway, sources in flows_by_gateway.items():
             gateway_safe = safe_filename(gateway)
             filename = os.path.join(output_dir, f"{gateway_safe}.gv")
@@ -191,7 +191,7 @@ class GraphGenerator:
             
             g.render(view=False)
             
-            # Cleanup .gv file
+            # Remove temporary .gv file.
             try:
                 if os.path.exists(filename):
                     os.remove(filename)
@@ -200,11 +200,11 @@ class GraphGenerator:
             
             logging.info(f"✓ Graph generated: {filename}.png")
         
-        # Generate PDF
+        # Generate PDF.
         self.generate_pdf(output_dir, interface_filter)
     
     def generate_pdf(self, output_dir, interface_filter=None):
-        """Generate PDF from PNG files."""
+        """Generate PDF from PNG files in output_dir."""
         try:
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4
@@ -225,7 +225,7 @@ class GraphGenerator:
 
             pdf_path = os.path.join(output_dir, f"{host_name}_{interface_safe}_FLOW_MATRIX.pdf") if interface_safe else os.path.join(output_dir, f"{host_name}_FLOW_MATRIX.pdf")
             
-            # Create PDF
+            # Create PDF.
             c = canvas.Canvas(pdf_path, pagesize=A4)
             width, height = A4
             c.setTitle(f"Flow matrix for gateway {host_name}")

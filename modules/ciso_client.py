@@ -1,6 +1,6 @@
 """
-CISO Assistant client module for PyFRC2G
-Handles uploading generated PDFs to CISO Assistant as evidence revisions
+CISO Assistant client module for PyFRC2G.
+Uploads generated PDFs to CISO Assistant as evidence revisions.
 """
 
 import os
@@ -14,14 +14,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class CISOCClient:
-    """Client for uploading evidence to CISO Assistant"""
-    
+    """Client for uploading evidence to CISO Assistant."""
+
     def __init__(self, config):
         """
         Initialize CISO Assistant client.
-        
+
         Args:
-            config: Config object with CISO Assistant settings
+            config: Config object with CISO Assistant settings.
         """
         self.config = config
         self.ciso_url = getattr(config, 'ciso_url', None)
@@ -30,7 +30,7 @@ class CISOCClient:
         self.ciso_folder_id = getattr(config, 'ciso_folder_id', None)
         self.ciso_evidence_id = getattr(config, 'ciso_evidence_id', None)
         
-        # Check if CISO Assistant is configured
+        # Check if CISO Assistant is configured.
         self.enabled = (
             self.ciso_url and 
             self.ciso_url != "https://<CISO_ASSISTANT_ADDRESS>" and
@@ -51,12 +51,12 @@ class CISOCClient:
     def upload_pdf(self, pdf_path):
         """
         Upload a PDF file to CISO Assistant as an evidence revision.
-        
+
         Args:
-            pdf_path: Path to the PDF file to upload
-            
+            pdf_path: Path to the PDF file to upload.
+
         Returns:
-            bool: True if upload successful, False otherwise
+            bool: True if upload successful, False otherwise.
         """
         if not self.enabled:
             logging.debug("CISO Assistant not enabled, skipping upload")
@@ -67,7 +67,7 @@ class CISOCClient:
             return False
         
         try:
-            # Prepare the file for upload
+            # Prepare the file for upload.
             pdf_filename = os.path.basename(pdf_path)
             logging.info(f"Uploading {pdf_filename} to CISO Assistant...")
             
@@ -87,17 +87,17 @@ class CISOCClient:
                     'Authorization': f'Token {self.ciso_token}'
                 }
                 
-                # Make the upload request
+                # Make the upload request.
                 response = requests.post(
                     self.ciso_evidence_path,
                     files=files,
                     data=data,
                     headers=headers,
-                    verify=False,  # CISO Assistant might use self-signed certificates
-                    timeout=60  # Large files might take time
+                    verify=False,  # CISO Assistant may use self-signed certificates.
+                    timeout=60  # Large files may take time.
                 )
                 
-                # Check response
+                # Check response.
                 response.raise_for_status()
                 
                 logging.info(f"✓ Successfully uploaded {pdf_filename} to CISO Assistant")
@@ -133,13 +133,13 @@ class CISOCClient:
     
     def upload_global_pdf(self, global_pdf_path):
         """
-        Upload the global PDF file in the output directory to CISO Assistant.
-        
+        Upload the global PDF file to CISO Assistant.
+
         Args:
-            global_pdf_path: global PDF path to upload
-            
+            global_pdf_path: Path to the global PDF to upload.
+
         Returns:
-            dict: Statistics about upload (successful, failed)
+            dict: Statistics (successful, failed, total).
         """
         if not self.enabled:
             logging.debug("CISO Assistant not enabled, skipping uploads")

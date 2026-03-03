@@ -1,5 +1,5 @@
 """
-API client module for pfSense and OPNSense
+API client module for pfSense and OPNSense.
 """
 
 import requests
@@ -13,25 +13,25 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class APIClient:
-    """API client for firewall gateways"""
-    
+    """API client for firewall gateways (pfSense and OPNSense)."""
+
     def __init__(self, config):
         self.config = config
         self.interface_map = {}
         self.net_map = {}
         self.address_map = {}
         self.port_map = {}
-        self.alias_details = {}  # Store full alias details: {alias_name: {type, content, description}}
+        self.alias_details = {}  # Full alias details: {alias_name: {type, content, description}}.
     
     def _handle_api_error(self, operation, url, error, log_level=logging.WARNING):
         """
         Centralized error handling for API requests.
-        
+
         Args:
-            operation: Description of the operation (e.g., "fetch aliases")
-            url: The URL that was requested
-            error: The exception that occurred
-            log_level: Logging level to use (default: WARNING)
+            operation: Description of the operation (e.g. "fetch aliases").
+            url: The URL that was requested.
+            error: The exception that occurred.
+            log_level: Logging level to use (default: WARNING).
         """
         error_type = type(error).__name__
         
@@ -67,18 +67,18 @@ class APIClient:
     def _make_api_request(self, url, method="GET", headers=None, auth=None, params=None, timeout=10, operation="API request"):
         """
         Make an API request with proper error handling.
-        
+
         Args:
-            url: The URL to request
-            method: HTTP method (default: GET)
-            headers: Request headers
-            auth: Authentication tuple (for OPNSense)
-            params: Query parameters
-            timeout: Request timeout in seconds
-            operation: Description of the operation for error messages
-            
+            url: The URL to request.
+            method: HTTP method (default: GET).
+            headers: Request headers.
+            auth: Authentication tuple (for OPNSense).
+            params: Query parameters.
+            timeout: Request timeout in seconds.
+            operation: Description of the operation for error messages.
+
         Returns:
-            Response object if successful, None otherwise
+            Response object if successful, None otherwise.
         """
         try:
             kwargs = {
@@ -94,11 +94,11 @@ class APIClient:
             
             response = requests.request(method, url, **kwargs)
             
-            # Check for HTTP errors (will raise HTTPError for 4xx/5xx status codes)
+            # Check for HTTP errors (raises HTTPError for 4xx/5xx).
             try:
                 response.raise_for_status()
             except HTTPError:
-                # Re-raise to be caught by the outer exception handler
+                # Re-raise to be caught by the outer exception handler.
                 raise
             
             return response
@@ -123,7 +123,7 @@ class APIClient:
             return None
     
     def fetch_aliases(self):
-        """Fetch all aliases from the configured gateway."""
+        """Fetch all aliases from the configured gateway and update global maps."""
         if self.config.gateway_type.lower() == "pfsense":
             return self._fetch_pfsense_aliases()
         elif self.config.gateway_type.lower() == "opnsense":
@@ -133,12 +133,12 @@ class APIClient:
             return {}, {}, {}, {}
     
     def _fetch_pfsense_aliases(self):
-        """Fetch all aliases from pfSense API."""
+        """Fetch all aliases from pfSense API and populate maps."""
         base_url = self.config.pfs_base_url if self.config.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.config.pfs_url)
         
         logging.debug(f"pfSense base URL: {base_url}")
         
-        # Fetch aliases
+        # Fetch aliases.
         alias_url = f"{base_url}/api/v2/firewall/aliases"
         logging.debug(f"Fetching aliases from: {alias_url}")
         headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
@@ -163,14 +163,14 @@ class APIClient:
                         continue
                     name = alias.get("name", "").lower()
                     alias_type = alias.get("type", "")
-                    # Address is now an array in pfSense API v2
+                    # Address is an array in pfSense API v2.
                     address_raw = alias.get("address", [])
-                    # Convert to list if it's a string (backward compatibility)
+                    # Convert to list if it's a string (backward compatibility).
                     if isinstance(address_raw, str):
                         address_list = [address_raw] if address_raw else []
                     else:
                         address_list = address_raw if isinstance(address_raw, list) else []
-                    # Join addresses with comma and space
+                    # Join addresses with comma and space.
                     address_str = ", ".join(str(addr) for addr in address_list if addr)
                     description = alias.get("descr", "") or alias.get("name", "")
                     
@@ -194,7 +194,7 @@ class APIClient:
                 logging.error(f"Error parsing pfSense aliases response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
-        # Fetch interfaces
+        # Fetch interfaces.
         iface_url = f"{base_url}/api/v2/interfaces"
         headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
         response = self._make_api_request(
@@ -215,12 +215,12 @@ class APIClient:
                 for iface in interfaces:
                     if not isinstance(iface, dict):
                         continue
-                    # Use 'id' field (wan, lan, opt1, etc.) as key, 'descr' (description) as value
+                    # Use 'id' (wan, lan, opt1, etc.) as key, 'descr' as value.
                     identifier = iface.get("id", "")
                     descr = iface.get("descr", "").strip()
                     if identifier:
                         identifier_lower = identifier.lower()
-                        # Always use descr if available, fallback to identifier.upper() only if descr is empty
+                        # Use descr if available, else identifier.upper().
                         if descr:
                             self.interface_map[identifier_lower] = descr
                             logging.debug(f"Mapped interface: {identifier_lower} -> {descr}")
@@ -237,12 +237,12 @@ class APIClient:
         return self.interface_map, self.net_map, self.address_map, self.port_map
     
     def _fetch_opnsense_aliases(self):
-        """Fetch all aliases from OPNSense API."""
+        """Fetch all aliases from OPNSense API and populate maps."""
         base_url = self.config.opns_base_url if self.config.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.config.opns_url)
         
         logging.debug(f"OPNSense base URL: {base_url}")
         
-        # Fetch aliases
+        # Fetch aliases.
         alias_url = f"{base_url}/api/firewall/alias/get"
         logging.debug(f"Fetching aliases from: {alias_url}")
         response = self._make_api_request(
@@ -255,7 +255,7 @@ class APIClient:
         if response:
             try:
                 data = response.json()
-                # Parse the complex structure: alias.aliases.alias
+                # Parse structure: alias.aliases.alias.
                 alias_container = data.get("alias", {})
                 aliases_dict = alias_container.get("aliases", {})
                 aliases = aliases_dict.get("alias", {}) if isinstance(aliases_dict, dict) else {}
@@ -271,7 +271,7 @@ class APIClient:
                     if not isinstance(alias_data, dict):
                         continue
                     
-                    # Check if alias is enabled
+                    # Skip disabled aliases.
                     enabled = alias_data.get("enabled", "0")
                     if enabled != "1":
                         logging.debug(f"Skipping disabled alias: {alias_data.get('name', uuid)}")
@@ -284,7 +284,7 @@ class APIClient:
                     name = alias_name.lower()
                     description = alias_data.get("description", "") or alias_name
                     
-                    # Determine alias type by checking which type has selected=1
+                    # Determine alias type (which type has selected=1).
                     type_info = alias_data.get("type", {})
                     if not isinstance(type_info, dict):
                         continue
@@ -295,12 +295,12 @@ class APIClient:
                             alias_type = type_key
                             break
                     
-                    # Only process host, network, and port types
+                    # Only process host, network, and port types.
                     if alias_type not in ["host", "network", "port"]:
                         logging.debug(f"Skipping alias '{alias_name}' with unsupported type: {alias_type}")
                         continue
                     
-                    # Extract content values (items with selected=1)
+                    # Extract content values (items with selected=1).
                     content = alias_data.get("content", {})
                     content_values = []
                     if isinstance(content, dict):
@@ -312,7 +312,7 @@ class APIClient:
                     
                     content_str = ", ".join(content_values) if content_values else ""
                     
-                    # Store alias details
+                    # Store alias details.
                     self.alias_details[name] = {
                         "name": alias_name,
                         "type": alias_type,
@@ -320,7 +320,7 @@ class APIClient:
                         "description": description
                     }
                     
-                    # Map to appropriate dictionaries
+                    # Map to appropriate dictionaries.
                     if alias_type in ["host", "network"]:
                         self.net_map[name] = self.address_map[name] = description
                         logging.debug(f"Mapped {alias_type} alias '{alias_name}': {description} (content: {content_str})")
@@ -335,7 +335,7 @@ class APIClient:
                 logging.error(f"Error parsing OPNSense aliases response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
-        # Fetch interfaces using the correct endpoint
+        # Fetch interfaces.
         iface_url = f"{base_url}/api/interfaces/overview/interfaces_info"
         response = self._make_api_request(
             iface_url,
@@ -356,20 +356,20 @@ class APIClient:
                 for row in rows:
                     if isinstance(row, dict):
                         identifier = row.get("identifier", "").lower()
-                        # Get description from row (OPNSense API structure)
+                        # Get description from row (OPNSense API structure).
                         description = row.get("description", "").strip()
-                        # Fallback to config.descr if description is empty
+                        # Fallback to config.descr if description is empty.
                         if not description:
                             config = row.get("config", {})
                             if isinstance(config, dict):
                                 description = config.get("descr", "").strip()
                         enabled = row.get("enabled", False)
                         
-                        # Skip system interfaces and disabled interfaces
+                        # Skip system and disabled interfaces.
                         if (identifier and 
                             identifier not in ["lo0", "enc0", "pflog0", ""] and
                             enabled):
-                            # Always use description if available, fallback to identifier.upper() only if description is empty
+                            # Use description if available, else identifier.upper().
                             if description:
                                 self.interface_map[identifier] = description
                                 logging.debug(f"Mapped interface: {identifier} -> {description}")
@@ -386,7 +386,7 @@ class APIClient:
         return self.interface_map, self.net_map, self.address_map, self.port_map
     
     def fetch_rules(self):
-        """Fetch firewall rules from the configured gateway."""
+        """Fetch firewall rules from the configured gateway and return rule entries."""
         if self.config.gateway_type.lower() == "pfsense":
             return self._fetch_pfsense_rules()
         elif self.config.gateway_type.lower() == "opnsense":
@@ -396,8 +396,8 @@ class APIClient:
             return []
     
     def _fetch_pfsense_rules(self):
-        """Fetch firewall rules from pfSense."""
-        # Auto-detect interfaces if not specified
+        """Fetch firewall rules from pfSense API."""
+        # Auto-detect interfaces if not specified.
         interfaces_to_process = self.config.interfaces.copy() if self.config.interfaces else []
         if not interfaces_to_process:
             logging.info("Attempting auto-detection of interfaces...")
@@ -408,7 +408,7 @@ class APIClient:
             else:
                 logging.warning("Could not auto-detect interfaces. Will fetch all rules globally.")
                 logging.warning("To improve accuracy, please specify interfaces in config.py: INTERFACES = ['wan', 'lan', 'opt1', ...]")
-                # Continue anyway - we'll fetch all rules globally
+                # Continue anyway: fetch all rules globally.
                 interfaces_to_process = []
         else:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")
@@ -416,7 +416,7 @@ class APIClient:
         all_entries = []
         seen_rule_ids = set()
         
-        # Method 1: Global rules (always try this first)
+        # Method 1: global rules (always try first).
         logging.debug(f"Fetching pfSense global rules from: {self.config.pfs_url}")
         headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
         response = self._make_api_request(
@@ -452,13 +452,12 @@ class APIClient:
                 logging.error(f"Error parsing pfSense rules response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
-        # Method 2: Per-interface rules (if interfaces were specified or detected)
+        # Method 2: per-interface rules (if interfaces were specified or detected).
         if interfaces_to_process:
             for interface in interfaces_to_process:
                 logging.info(f"Fetching rules for interface: {interface}")
                 logging.debug(f"Fetching rules for interface {interface} from: {self.config.pfs_url}")
-                # Note: pfSense API may support interface filtering via query params
-                # Adjust URL if needed based on pfSense API documentation
+                # pfSense API may support interface filtering via query params.
                 headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
                 params = {"interface": interface} if hasattr(self.config, 'pfs_url') else {}
                 response = self._make_api_request(
@@ -478,7 +477,7 @@ class APIClient:
                             logging.warning(f"Unexpected rules data format for {interface}: {type(entries)}")
                             entries = []
                         
-                        # Filter entries by interface if API doesn't support filtering
+                        # Filter entries by interface if API does not support filtering.
                         if entries:
                             filtered_entries = [e for e in entries if isinstance(e, dict) and e.get("interface", "").lower() == interface.lower()]
                             entries = filtered_entries
@@ -521,7 +520,7 @@ class APIClient:
             else:
                 logging.warning("Could not auto-detect interfaces. Will fetch all rules globally.")
                 logging.warning("To improve accuracy, please specify interfaces in config.py: INTERFACES = ['wan', 'lan', 'opt1', ...]")
-                # Continue anyway - we'll fetch all rules globally
+                # Continue anyway: fetch all rules globally.
                 interfaces_to_process = []
         else:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")
@@ -529,7 +528,7 @@ class APIClient:
         all_entries = []
         seen_rule_ids = set()
         
-        # Method 1: Global rules (always try this first)
+        # Method 1: global rules (always try first).
         logging.debug(f"Fetching OPNSense global rules from: {self.config.opns_url}")
         params = {"show_all": "1"}
         response = self._make_api_request(
@@ -566,7 +565,7 @@ class APIClient:
                 logging.error(f"Error parsing OPNSense rules response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
-        # Method 2: Per-interface rules (if interfaces were specified or detected)
+        # Method 2: per-interface rules (if interfaces were specified or detected).
         if interfaces_to_process:
             for interface in interfaces_to_process:
                 logging.info(f"Fetching rules for interface: {interface}")
@@ -602,7 +601,7 @@ class APIClient:
                         logging.warning(f"Error parsing OPNSense rules response for {interface}: {e}")
                         logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         else:
-            logging.info("No specific interfaces to process, using global rules only")
+            logging.info("No specific interfaces to process; using global rules only.")
         
         if all_entries:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
@@ -616,13 +615,13 @@ class APIClient:
         return all_entries
     
     def _detect_pfsense_interfaces(self):
-        """Auto-detect interface list from pfSense."""
+        """Auto-detect interface list from pfSense API."""
         interfaces = set()
         base_api_url = self.config.pfs_base_url if self.config.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.config.pfs_url)
         
         logging.debug(f"Attempting interface detection with base URL: {base_api_url}")
         
-        # Primary method: Use the correct pfSense endpoint
+        # Primary method: use pfSense interfaces endpoint.
         endpoint = "/api/v2/interfaces"
         url = f"{base_api_url}{endpoint}"
         logging.debug(f"Trying primary endpoint: {url}")
@@ -649,14 +648,14 @@ class APIClient:
                 
                 for iface in interfaces_list:
                     if isinstance(iface, dict):
-                        # Get interface identifier (id field: wan, lan, opt1, etc.)
+                        # Get interface identifier (wan, lan, opt1, etc.).
                         identifier = iface.get("id", "")
-                        # Get description
+                        # Get description.
                         descr = iface.get("descr", "")
-                        # Check if interface is enabled
-                        enabled = iface.get("enable", True)  # Default to True if not specified
+                        # Check if interface is enabled (default True if not specified).
+                        enabled = iface.get("enable", True)
                         
-                        # Only add enabled interfaces, skip system interfaces
+                        # Only add enabled interfaces; skip system interfaces.
                         if (identifier and 
                             identifier.lower() not in ["lo0", "enc0", "pflog0", ""] and
                             enabled):
@@ -666,8 +665,8 @@ class APIClient:
             except (ValueError, KeyError, TypeError) as e:
                 logging.debug(f"Error parsing pfSense interfaces response: {e}")
         
-        # Fallback method: Try v1 endpoint
-        if not interfaces:  # Only try fallback if primary method didn't find interfaces
+        # Fallback: try v1 endpoint.
+        if not interfaces:
             endpoint = "/api/v1/firewall/interface"
             url = f"{base_api_url}{endpoint}"
             logging.debug(f"Trying fallback endpoint: {url}")
@@ -694,8 +693,8 @@ class APIClient:
                 except (ValueError, KeyError, TypeError) as e:
                     logging.debug(f"Error parsing pfSense interfaces fallback response: {e}")
         
-        # Extract from firewall rules (most reliable method)
-        if not interfaces:  # Only try this if other methods didn't find interfaces
+        # Fallback: extract from firewall rules.
+        if not interfaces:
             logging.debug("Attempting to extract interfaces from firewall rules...")
             logging.debug(f"Fetching rules from: {self.config.pfs_url}")
             headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
@@ -721,12 +720,12 @@ class APIClient:
                     
                     for i, entry in enumerate(rules):
                         if isinstance(entry, dict):
-                            # Check interface field
+                            # Check interface field.
                             if "interface" in entry and entry["interface"]:
                                 iface = entry["interface"].lower()
                                 logging.debug(f"Rule {i}: interface = {iface}")
                                 interfaces.add(iface)
-                            # Also check source/destination for interface references
+                            # Also check source/destination for interface references.
                             for field in ["source", "destination"]:
                                 if field in entry and isinstance(entry[field], dict):
                                     for subfield in ["network", "address"]:
@@ -740,13 +739,13 @@ class APIClient:
         
         logging.debug(f"All collected interface candidates: {sorted(interfaces)}")
         
-        # Filter and sort valid interfaces
+        # Filter and sort valid interfaces.
         valid_interfaces = []
         for iface in interfaces:
             iface_str = str(iface).lower().strip()
-            # Ignore invalid values
+            # Ignore invalid values.
             if iface_str and iface_str not in ["1", "any", "(self)", "", "none", "null"]:
-                # Accept standard interface names
+                # Accept standard interface names (wan, lan, opt*).
                 if iface_str in ["wan", "lan"] or iface_str.startswith("opt"):
                     valid_interfaces.append(iface_str)
                     logging.debug(f"Accepted interface: {iface_str}")
@@ -764,13 +763,13 @@ class APIClient:
         return []
     
     def _detect_opnsense_interfaces(self):
-        """Auto-detect interface list from OPNSense."""
+        """Auto-detect interface list from OPNSense API."""
         interfaces = set()
         base_api_url = self.config.opns_base_url if self.config.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.config.opns_url)
         
         logging.debug(f"Attempting interface detection with base URL: {base_api_url}")
         
-        # Primary method: Use the correct OPNSense endpoint
+        # Primary method: use OPNSense interfaces endpoint.
         endpoint = "/api/interfaces/overview/interfaces_info"
         url = f"{base_api_url}{endpoint}"
         logging.debug(f"Trying primary endpoint: {url}")
@@ -797,18 +796,18 @@ class APIClient:
                     
                     for row in rows:
                         if isinstance(row, dict):
-                            # Get identifier (wan, lan, etc.)
+                            # Get identifier (wan, lan, etc.).
                             identifier = row.get("identifier", "")
                             enabled = row.get("enabled", False)
                             
-                            # Only add enabled interfaces, skip system interfaces
+                            # Only add enabled interfaces; skip system interfaces.
                             if (identifier and 
                                 identifier not in ["lo0", "enc0", "pflog0", ""] and
                                 enabled):
                                 logging.debug(f"Found enabled interface identifier: {identifier}")
                                 interfaces.add(identifier)
                             
-                            # Also check config.if for device name mapping (as fallback)
+                            # Fallback: config.if for device name.
                             config = row.get("config", {})
                             if isinstance(config, dict):
                                 if_name = config.get("if", "")
@@ -823,8 +822,8 @@ class APIClient:
         
 
         
-        # Extract from firewall rules (most reliable method)
-        if not interfaces:  # Only try this if primary method didn't find interfaces
+        # Fallback: extract from firewall rules.
+        if not interfaces:
             logging.debug("Attempting to extract interfaces from firewall rules...")
             params = {"show_all": "1"}
             logging.debug(f"Fetching rules from: {self.config.opns_url}")
@@ -855,7 +854,7 @@ class APIClient:
                                 iface = entry["interface"]
                                 logging.debug(f"Rule {i}: interface = {iface}")
                                 interfaces.add(iface)
-                            # Also check source/destination for interface references
+                            # Also check source/destination for interface references.
                             for field in ["source", "destination"]:
                                 if field in entry and isinstance(entry[field], dict):
                                     for subfield in ["network", "address"]:
@@ -869,13 +868,13 @@ class APIClient:
         
         logging.debug(f"All collected interface candidates: {sorted(interfaces)}")
         
-        # Filter and sort valid interfaces
+        # Filter and sort valid interfaces.
         valid_interfaces = []
         for iface in interfaces:
             iface_str = str(iface).lower().strip()
-            # Ignore invalid values
+            # Ignore invalid values.
             if iface_str and iface_str not in ["1", "any", "(self)", "", "none", "null"]:
-                # Accept standard interface names
+                # Accept standard interface names (wan, lan, opt*).
                 if iface_str in ["wan", "lan"] or iface_str.startswith("opt"):
                     valid_interfaces.append(iface_str)
                     logging.debug(f"Accepted interface: {iface_str}")

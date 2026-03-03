@@ -1,6 +1,6 @@
 """
-XML backup parser for pfSense and OPNSense firewall configurations.
-Reads config.xml backup files and extracts rules + aliases in API-compatible format.
+Parse pfSense and OPNSense XML backup files.
+Extracts rules and aliases in API-compatible format from config.xml backups.
 """
 
 import logging
@@ -11,9 +11,9 @@ from pathlib import Path
 def detect_backup_type(xml_path):
     """
     Detect whether the XML backup is from pfSense or OPNSense.
-    
+
     Returns:
-        str: 'pfsense', 'opnsense', or None if unknown
+        str: 'pfsense', 'opnsense', or None if unknown.
     """
     try:
         tree = ET.parse(xml_path)
@@ -25,10 +25,13 @@ def detect_backup_type(xml_path):
         if root_tag == "opnsense":
             return "opnsense"
         
-        # Fallback: check for known elements
+        # Fallback: check for known elements.
         if root.find(".//filter/rule") is not None:
             return "pfsense"
         if root.find(".//firewall/filter/rule") is not None:
+            return "opnsense"
+        # OPNsense 26.1+ uses OPNsense/Firewall/Filter/rules/rule.
+        if root.find("OPNsense/Firewall/Filter/rules/rule") is not None:
             return "opnsense"
             
         logging.warning(f"Could not detect backup type from root tag: {root_tag}")
@@ -39,14 +42,14 @@ def detect_backup_type(xml_path):
 
 
 def _get_text(element, default=""):
-    """Get text from XML element, handling None."""
+    """Return text from XML element, or default if None or empty."""
     if element is None:
         return default
     return (element.text or "").strip() if element.text else default
 
 
 def _get_child_text(parent, tag, default=""):
-    """Get text from child element."""
+    """Return text from child element, or default if missing."""
     if parent is None:
         return default
     child = parent.find(tag)
@@ -55,9 +58,11 @@ def _get_child_text(parent, tag, default=""):
 
 def get_gateway_name_from_xml(xml_path):
     """
-    Extract gateway name from backup XML as the system hostname.
+    Extract gateway name from backup XML (system hostname).
     Both pfSense and OPNSense use <system><hostname>...</hostname>.
-    Returns None on error or if not found.
+
+    Returns:
+        str or None: Hostname if found, None on error or if not found.
     """
     try:
         tree = ET.parse(xml_path)
@@ -75,12 +80,12 @@ def get_gateway_name_from_xml(xml_path):
 
 def _extract_address(source_or_dest):
     """
-    Extract address from source/destination XML element.
-    Handles: <any/>, <any></any>, <any>1</any>, <network>X</network>, <address>X</address>.
+    Extract address from source or destination XML element.
+    Handles <any/>, empty <any>, <any>1</any>, <network>, and <address>.
     """
     if source_or_dest is None:
         return None
-    # Any: self-closing, empty, or <any>1</any> (OPNSense) -> always "any"
+    # Any: self-closing, empty, or <any>1</any> (OPNSense) maps to "any".
     any_elem = source_or_dest.find("any")
     if any_elem is not None:
         return "any"
@@ -99,7 +104,7 @@ def _extract_address(source_or_dest):
 
 
 def _extract_port(dest_elem):
-    """Extract port from destination element (e.g. <destination><port>53</port></destination>)."""
+    """Return port from destination element, e.g. <destination><port>53</port></destination>."""
     if dest_elem is None:
         return None
     port = dest_elem.find("port")
@@ -111,7 +116,9 @@ def _extract_port(dest_elem):
 def parse_pfsense_backup(xml_path):
     """
     Parse pfSense config.xml backup.
-    Returns (aliases_dict, rules_list) compatible with API format.
+
+    Returns:
+        tuple: (aliases_dict, rules_list) in API-compatible format.
     """
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -122,7 +129,7 @@ def parse_pfsense_backup(xml_path):
     port_map = {}
     alias_details = {}
     
-    # Parse aliases: /pfsense/aliases/alias
+    # Parse aliases: /pfsense/aliases/alias.
     aliases = root.find("aliases")
     if aliases is not None:
         for alias in aliases.findall("alias"):
@@ -132,7 +139,7 @@ def parse_pfsense_backup(xml_path):
             alias_type = _get_child_text(alias, "type", "")
             descr = _get_child_text(alias, "descr", "") or alias.get("name", "")
             
-            # Address can be single or multiple (pf uses 'address' or 'address' with newlines)
+            # Address can be single or multiple (pfSense may use newlines).
             addr_elem = alias.find("address")
             if addr_elem is not None and addr_elem.text:
                 content = addr_elem.text.strip().replace("\n", ", ")
@@ -152,7 +159,7 @@ def parse_pfsense_backup(xml_path):
             else:
                 net_map[name] = descr or content
     
-    # Parse interfaces: /pfsense/interfaces/*
+    # Parse interfaces: /pfsense/interfaces/*.
     for iface in root.findall("interfaces/*"):
         if iface.tag in ("wan", "lan") or (iface.tag or "").startswith("opt"):
             iface_id = iface.tag.lower()
@@ -161,7 +168,7 @@ def parse_pfsense_backup(xml_path):
             descr = _get_child_text(iface, "descr", "")
             interface_map[iface_id] = descr or iface_id.upper()
     
-    # Parse rules: /pfsense/filter/rule or /pfsense/filter/rule (floating in separate section)
+    # Parse rules: /pfsense/filter/rule (floating rules in separate section).
     rules = []
     filter_elem = root.find("filter")
     if filter_elem is not None:
@@ -170,14 +177,14 @@ def parse_pfsense_backup(xml_path):
             if entry:
                 rules.append(entry)
     
-    # Floating rules: /pfsense/floatingrules/rule
+    # Floating rules: /pfsense/floatingrules/rule.
     floating = root.find("floatingrules")
     if floating is not None:
         for rule in floating.findall("rule"):
             entry = _parse_pfsense_rule(rule)
             if entry:
                 entry["floating"] = True
-                entry["interface"] = None  # Floating = no interface
+                entry["interface"] = None  # Floating rules have no interface.
                 rules.append(entry)
     
     return {
@@ -190,7 +197,7 @@ def parse_pfsense_backup(xml_path):
 
 
 def _parse_pfsense_rule(rule_elem):
-    """Parse a single pfSense rule element into API-compatible dict."""
+    """Parse a single pfSense rule element into an API-compatible dict."""
     rule_type = _get_child_text(rule_elem, "type", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
     disabled = _get_child_text(rule_elem, "disabled", "")
@@ -199,7 +206,7 @@ def _parse_pfsense_rule(rule_elem):
     dest = rule_elem.find("destination")
     source_val = _extract_address(source) or "any"
     dest_val = _extract_address(dest) or "any"
-    # Port can be in <destination><port>53</port></destination>
+    # Port may be in <destination><port>...</port></destination>.
     dst_port = _extract_port(dest) or _get_child_text(rule_elem, "destination_port", "")
     
     protocol = _get_child_text(rule_elem, "protocol", "")
@@ -223,8 +230,10 @@ def _parse_pfsense_rule(rule_elem):
 def parse_opnsense_backup(xml_path):
     """
     Parse OPNSense config.xml backup.
-    In backup XML, filter is at root: <opnsense><filter><rule>...</rule></filter>.
-    Returns (aliases_dict, rules_list) compatible with API format.
+    Filter is at root: <opnsense><filter><rule>...</rule></filter>.
+
+    Returns:
+        tuple: (aliases_dict, rules_list) in API-compatible format.
     """
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -235,7 +244,7 @@ def parse_opnsense_backup(xml_path):
     port_map = {}
     alias_details = {}
     
-    # Parse aliases: try /opnsense/firewall/aliases then nested OPNsense/firewall/aliases
+    # Parse aliases: /opnsense/firewall/aliases or nested OPNsense/firewall/aliases.
     for aliases_elem in root.findall(".//aliases"):
         for alias in aliases_elem.findall("alias"):
             name = _get_child_text(alias, "name", "").lower()
@@ -264,7 +273,7 @@ def parse_opnsense_backup(xml_path):
             else:
                 net_map[name] = descr or content
     
-    # Parse interfaces: /opnsense/interfaces/*
+    # Parse interfaces: /opnsense/interfaces/*.
     for iface in root.findall("interfaces/*"):
         if iface.tag in ("wan", "lan") or (iface.tag or "").startswith("opt"):
             iface_id = iface.tag.lower()
@@ -274,14 +283,23 @@ def parse_opnsense_backup(xml_path):
             if _get_child_text(iface, "enable", "1") == "1":
                 interface_map[iface_id] = descr or iface_id.upper()
     
-    # Parse rules: in backup config.xml filter is directly under root <opnsense><filter>
+    # Parse rules: prefer OPNsense 26.1+ format, else legacy <opnsense><filter>.
     rules = []
-    filter_elem = root.find("filter")
-    if filter_elem is not None:
-        for rule in filter_elem.findall("rule"):
-            entry = _parse_opnsense_rule(rule)
+    rules_new = root.find("OPNsense/Firewall/Filter/rules")
+    if rules_new is not None:
+        for rule in rules_new.findall("rule"):
+            entry = _parse_opnsense_rule_26_1(rule)
             if entry:
                 rules.append(entry)
+        if rules:
+            logging.debug("Using OPNsense 26.1+ firewall rules (new) format")
+    if not rules:
+        filter_elem = root.find("filter")
+        if filter_elem is not None:
+            for rule in filter_elem.findall("rule"):
+                entry = _parse_opnsense_rule(rule)
+                if entry:
+                    rules.append(entry)
     
     return {
         "interface_map": interface_map,
@@ -294,7 +312,7 @@ def parse_opnsense_backup(xml_path):
 
 def _parse_opnsense_rule(rule_elem):
     """Parse a single OPNSense rule element (backup XML uses <type> and <descr>)."""
-    # Backup XML uses type/descr; API uses action/description
+    # Backup XML uses type/descr; API uses action/description.
     action = _get_child_text(rule_elem, "type", "") or _get_child_text(rule_elem, "action", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
     
@@ -310,6 +328,7 @@ def _parse_opnsense_rule(rule_elem):
     
     return {
         "action": action or "pass",
+        "type": action or "pass",  # Same as action, for consistency with pfSense.
         "interface": interface if interface else None,
         "source": source_val,
         "destination": dest_val,
@@ -322,18 +341,47 @@ def _parse_opnsense_rule(rule_elem):
     }
 
 
+def _parse_opnsense_rule_26_1(rule_elem):
+    """
+    Parse a single OPNsense 26.1+ rule (new format with action, source_net, destination_net, description, enabled).
+    """
+    action = _get_child_text(rule_elem, "action", "pass")
+    interface = _get_child_text(rule_elem, "interface", "")
+    source_val = _get_child_text(rule_elem, "source_net", "") or "any"
+    dest_val = _get_child_text(rule_elem, "destination_net", "") or "any"
+    dst_port = _get_child_text(rule_elem, "destination_port", "")
+    protocol = _get_child_text(rule_elem, "protocol", "")
+    descr = _get_child_text(rule_elem, "description", "")
+    enabled = _get_child_text(rule_elem, "enabled", "1") == "1"
+    is_floating = not interface or interface == ""
+    return {
+        "action": action or "pass",
+        "type": action or "pass",  # Same as action (pass/block/reject), for consistency with pfSense.
+        "interface": interface if interface else None,
+        "source": source_val if source_val else "any",
+        "destination": dest_val if dest_val else "any",
+        "protocol": protocol or None,
+        "destination_port": dst_port or None,
+        "description": descr,
+        "floating": is_floating,
+        "source_net": source_val if source_val else "any",
+        "destination_net": dest_val if dest_val else "any",
+        "enabled": enabled,
+    }
+
+
 def parse_xml_backup(xml_path):
     """
     Parse XML backup file (pfSense or OPNSense).
-    
+
     Args:
-        xml_path: Path to config.xml backup file
-        
+        xml_path: Path to config.xml backup file.
+
     Returns:
-        tuple: (aliases_dict, rules_list, gateway_type, gateway_name)
-        aliases_dict has keys: interface_map, net_map, address_map, port_map, alias_details
-        rules_list is a list of rule dicts in API-compatible format
-        gateway_name is hostname from XML, or None if not found
+        tuple: (aliases_dict, rules_list, gateway_type, gateway_name).
+        aliases_dict: interface_map, net_map, address_map, port_map, alias_details.
+        rules_list: Rule dicts in API-compatible format.
+        gateway_name: Hostname from XML, or None if not found.
     """
     path = Path(xml_path)
     if not path.exists():
