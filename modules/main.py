@@ -30,8 +30,14 @@ def _gateway_from_entry(entry, config):
     return f"{config.gateway_name}/Floating-rules"
 
 
+def _is_floating_entry(entry):
+    """True if rule is floating (no interface or explicitly tagged). Same logic for API and backup."""
+    return bool(entry.get("floating") or not entry.get("interface"))
+
+
 def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
     """Convert one rule entry to a CSV row dict for pfSense or OPNSense."""
+    floating = _is_floating_entry(entry)
     if gateway_type == "pfsense":
         return {
             "SOURCE": map_value(entry.get("source"), "source", config.any_value),
@@ -42,7 +48,7 @@ def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
             "DESTINATION": map_value(entry.get("destination"), "destination", config.any_value),
             "COMMENT": map_value(entry.get("descr"), None, config.any_value),
             "DISABLED": "True" if entry.get("disabled") else "False",
-            "FLOATING": "True" if entry.get("floating") else "False",
+            "FLOATING": "True" if floating else "False",
             "RULE ORDER": rule_order,
         }
     # OPNSense: action/type (pass, block, reject).
@@ -57,7 +63,7 @@ def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
         "DESTINATION": map_value(get_dest_val(entry), "destination", config.any_value),
         "COMMENT": map_value(entry.get("description"), None, config.any_value),
         "DISABLED": "True" if disabled else "False",
-        "FLOATING": "True" if not entry.get("interface") else "False",
+        "FLOATING": "True" if floating else "False",
         "RULE ORDER": rule_order,
     }
 

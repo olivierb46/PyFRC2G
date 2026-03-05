@@ -498,6 +498,7 @@ class APIClient:
         
         if all_entries:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
+            self._normalize_floating_rules(all_entries)
         else:
             logging.error("No rules retrieved. Please check:")
             logging.error("  1. API credentials are correct")
@@ -506,6 +507,16 @@ class APIClient:
             logging.error("  4. Run with --debug flag for more details")
         
         return all_entries
+    
+    def _normalize_floating_rules(self, entries):
+        """Set entry['floating'] from interface so API matches backup tagging."""
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("floating") is not True and not entry.get("interface"):
+                entry["floating"] = True
+            elif entry.get("floating") is not True:
+                entry["floating"] = False
     
     def _fetch_opnsense_rules(self):
         """Fetch firewall rules from OPNSense."""
@@ -605,6 +616,7 @@ class APIClient:
         
         if all_entries:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
+            self._normalize_floating_rules(all_entries)
         else:
             logging.error("No rules retrieved. Please check:")
             logging.error("  1. API credentials are correct")

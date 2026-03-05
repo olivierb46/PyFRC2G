@@ -177,13 +177,13 @@ def parse_pfsense_backup(xml_path):
             if entry:
                 rules.append(entry)
     
-    # Floating rules: /pfsense/floatingrules/rule.
+    # Floating rules: /pfsense/floatingrules/rule (tagged explicitly like API).
     floating = root.find("floatingrules")
     if floating is not None:
         for rule in floating.findall("rule"):
             entry = _parse_pfsense_rule(rule)
             if entry:
-                entry["floating"] = True
+                entry["floating"] = True  # Explicit floating section in backup.
                 entry["interface"] = None  # Floating rules have no interface.
                 rules.append(entry)
     
@@ -201,7 +201,10 @@ def _parse_pfsense_rule(rule_elem):
     rule_type = _get_child_text(rule_elem, "type", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
     disabled = _get_child_text(rule_elem, "disabled", "")
-    
+    # pfSense backup can tag a rule as floating via <floating>yes</floating> inside the rule.
+    floating_tag = _get_child_text(rule_elem, "floating", "")
+    floating_from_tag = (floating_tag or "").strip().lower() in ("yes", "1", "true")
+
     source = rule_elem.find("source")
     dest = rule_elem.find("destination")
     source_val = _extract_address(source) or "any"
@@ -212,7 +215,9 @@ def _parse_pfsense_rule(rule_elem):
     protocol = _get_child_text(rule_elem, "protocol", "")
     descr = _get_child_text(rule_elem, "descr", "")
     tracker = _get_child_text(rule_elem, "tracker", "")
-    
+    # Floating: <floating>yes</floating>, or no interface, or from floatingrules section (set later).
+    is_floating = floating_from_tag or not interface or interface == ""
+
     return {
         "type": rule_type,
         "interface": interface if interface else None,
@@ -223,7 +228,7 @@ def _parse_pfsense_rule(rule_elem):
         "descr": descr,
         "tracker": tracker,
         "disabled": disabled == "1",
-        "floating": False,
+        "floating": is_floating,
     }
 
 
