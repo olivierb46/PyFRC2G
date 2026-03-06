@@ -7,7 +7,7 @@ import urllib3
 import logging
 import traceback
 from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
-from modules.utils import extract_base_url, update_api_maps, normalize_interface
+from modules.utils import extract_base_url, update_api_maps, normalize_interface, is_interface_floating, is_floating_flag
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -519,17 +519,13 @@ class APIClient:
         return all_entries
 
     def _normalize_floating_rules(self, entries):
-        """Set entry['floating'] from interface or API flag so API matches backup tagging."""
+        """Set entry['floating'] from interface or API flag (shared logic with utils)."""
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            iface = normalize_interface(entry.get("interface")).lower()
-            api_floating = entry.get("floating")
-            is_floating_api = api_floating in (True, 1, "1", "yes", "true")
-            if iface == "floating" or is_floating_api or not iface:
-                entry["floating"] = True
-            else:
-                entry["floating"] = False
+            entry["floating"] = bool(
+                is_interface_floating(entry.get("interface")) or is_floating_flag(entry.get("floating"))
+            )
     
     def _fetch_opnsense_rules(self):
         """Fetch firewall rules from OPNSense."""
@@ -557,7 +553,42 @@ class APIClient:
         all_entries = []
         seen_rule_ids = set()
         entries_by_id = {}  # uuid -> entry; per-interface responses update ipprotocol/protocol
+        # OPNSense 26.1: floating rules may appear in global with interface=lan,wan etc.; we fetch
+        # interface=floating first to get the set of UUIDs that are floating, then mark them everywhere.
+        floating_rule_ids = set()
         
+        # 1) Fetch floating rules first to build floating_rule_ids (all rules referenced as floating).
+        logging.info("Fetching rules for interface: floating")
+        params_floating = {"interface": "floating", "show_all": "1"}
+        response_floating = self._make_api_request(
+            self.config.opns_url,
+            params=params_floating,
+            auth=(self.config.opns_key, self.config.opns_secret),
+            timeout=30,
+            operation="fetching OPNSense rules for interface floating"
+        )
+        if response_floating:
+            try:
+                floating_entries = self._get_list_from_response(
+                    response_floating, key="rows", context="rules for floating"
+                )
+                logging.info(f"  → {len(floating_entries)} rules found for floating")
+                for entry in floating_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    rule_id = entry.get("uuid") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
+                    if rule_id:
+                        floating_rule_ids.add(rule_id)
+                        entry["floating"] = True
+                        entry["interface"] = "floating"
+                        if rule_id not in seen_rule_ids:
+                            seen_rule_ids.add(rule_id)
+                            all_entries.append(entry)
+                            entries_by_id[rule_id] = entry
+            except (ValueError, KeyError, TypeError) as e:
+                logging.warning(f"Error parsing OPNSense floating rules response: {e}")
+        
+        # 2) Fetch global rules; mark as floating any rule whose uuid is in floating_rule_ids.
         logging.debug(f"Fetching OPNSense global rules from: {self.config.opns_url}")
         params = {"show_all": "1"}
         response = self._make_api_request(
@@ -578,15 +609,26 @@ class APIClient:
                     if not isinstance(entry, dict):
                         continue
                     rule_id = entry.get("uuid") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
-                    if rule_id and rule_id not in seen_rule_ids:
+                    if not rule_id:
+                        continue
+                    if rule_id in entries_by_id:
+                        existing = entries_by_id[rule_id]
+                        existing.update(entry)
+                        if rule_id in floating_rule_ids:
+                            existing["floating"] = True
+                            existing["interface"] = "floating"
+                    elif rule_id not in seen_rule_ids:
                         seen_rule_ids.add(rule_id)
+                        if rule_id in floating_rule_ids:
+                            entry["floating"] = True
+                            entry["interface"] = "floating"
                         all_entries.append(entry)
-                        if rule_id:
-                            entries_by_id[rule_id] = entry
+                        entries_by_id[rule_id] = entry
             except (ValueError, KeyError, TypeError) as e:
                 logging.error(f"Error parsing OPNSense rules response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
+        # 3) Fetch per-interface (including floating again to merge/update); preserve floating tag by uuid.
         if interfaces_to_process:
             for interface in interfaces_to_process:
                 logging.info(f"Fetching rules for interface: {interface}")
@@ -604,18 +646,20 @@ class APIClient:
                     try:
                         entries = self._get_list_from_response(response, key="rows", context=f"rules for {interface}")
                         logging.info(f"  → {len(entries)} rules found for {interface}")
-                        
                         is_floating_interface = (str(interface).strip().lower() == "floating")
                         for entry in entries:
                             if not isinstance(entry, dict):
                                 continue
-                            if is_floating_interface:
+                            if is_floating_interface or (entry.get("uuid") in floating_rule_ids):
                                 entry["floating"] = True
                                 entry["interface"] = "floating"
                             rule_id = entry.get("uuid") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
                             if rule_id in entries_by_id:
                                 existing = entries_by_id[rule_id]
                                 existing.update(entry)
+                                if rule_id in floating_rule_ids:
+                                    existing["floating"] = True
+                                    existing["interface"] = "floating"
                             elif rule_id and rule_id not in seen_rule_ids:
                                 seen_rule_ids.add(rule_id)
                                 all_entries.append(entry)
@@ -626,6 +670,12 @@ class APIClient:
                         logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         else:
             logging.info("No specific interfaces to process; using global rules only.")
+        
+        # Ensure every rule in floating_rule_ids is tagged (in case it appeared only in global with wrong interface).
+        for rule_id in floating_rule_ids:
+            if rule_id in entries_by_id:
+                entries_by_id[rule_id]["floating"] = True
+                entries_by_id[rule_id]["interface"] = "floating"
         
         if all_entries:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")

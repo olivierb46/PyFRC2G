@@ -24,9 +24,12 @@ from modules.utils import (
 
 
 def _gateway_from_entry(entry, config):
-    """Build GATEWAY cell: gateway_name/interfaces (e.g. pfSense/wan,lan). Use map_value for interface. Floating-rules only when no interface."""
+    """Build GATEWAY cell: gateway_name/interfaces. Floating with multiple interfaces (e.g. lan,wan) shows interfaces; else Floating-rules."""
     entry_interface = normalize_interface(entry.get("interface"))
-    if entry_interface and entry_interface.strip().lower() == "floating":
+    if entry.get("floating"):
+        # Multiple interfaces (e.g. lan,wan) → show them; otherwise "Floating-rules"
+        if entry_interface and "," in entry_interface:
+            return f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}"
         return f"{config.gateway_name}/Floating-rules"
     if entry_interface:
         return f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}"

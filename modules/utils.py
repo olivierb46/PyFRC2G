@@ -50,6 +50,33 @@ def normalize_interface(entry_interface):
         return ",".join(str(x).strip() for x in entry_interface) if entry_interface else ""
     return str(entry_interface).strip()
 
+
+# Floating: API/backup use same semantics (tag "yes"/"1"/"true" or flag True/1).
+FLOATING_FLAG_VALUES = frozenset({True, 1, "1", "yes", "true"})
+
+
+def is_interface_floating(raw_interface):
+    """
+    True if interface value means floating: empty, "floating", "0", or multiple (e.g. "lan,wan").
+    Used by API client and XML parser for consistent tagging.
+    """
+    if raw_interface is None:
+        return True
+    if isinstance(raw_interface, (int, float)) and raw_interface == 0:
+        return True
+    iface = normalize_interface(raw_interface).lower()
+    if not iface or iface == "floating" or iface == "0":
+        return True
+    return "," in iface
+
+
+def is_floating_flag(value):
+    """True if API/XML floating flag is set (True, 1, '1', 'yes', 'true')."""
+    if value is None:
+        return False
+    return (str(value).strip().lower() if isinstance(value, str) else value) in FLOATING_FLAG_VALUES
+
+
 def extract_host_from_url(url):
     """Return host (IP or domain) from URL."""
     from urllib.parse import urlparse
@@ -102,7 +129,12 @@ def map_value(value, field=None, any_value="Any"):
     
     # Interface and source mapping.
     if field in ("source", "interface"):
-        val = str(value).lower()
+        val = str(value).strip().lower()
+        if "," in val:
+            # Multiple interfaces (e.g. "lan,wan") → map each and rejoin
+            parts = [p.strip() for p in val.split(",") if p.strip()]
+            mapped = [API_INTERFACE_MAP.get(p, p.upper()) for p in parts]
+            return ", ".join(mapped)
         if val in API_INTERFACE_MAP:
             return API_INTERFACE_MAP[val]
     

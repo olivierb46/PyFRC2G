@@ -7,6 +7,8 @@ import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from modules.utils import is_interface_floating, is_floating_flag
+
 
 def detect_backup_type(xml_path):
     """
@@ -201,23 +203,18 @@ def _parse_pfsense_rule(rule_elem):
     rule_type = _get_child_text(rule_elem, "type", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
     disabled = _get_child_text(rule_elem, "disabled", "")
-    # pfSense backup can tag a rule as floating via <floating>yes</floating> inside the rule.
     floating_tag = _get_child_text(rule_elem, "floating", "")
-    floating_from_tag = (floating_tag or "").strip().lower() in ("yes", "1", "true")
+    is_floating = is_floating_flag(floating_tag) or is_interface_floating(interface)
 
     source = rule_elem.find("source")
     dest = rule_elem.find("destination")
     source_val = _extract_address(source) or "any"
     dest_val = _extract_address(dest) or "any"
-    # Port may be in <destination><port>...</port></destination>.
     dst_port = _extract_port(dest) or _get_child_text(rule_elem, "destination_port", "")
-    
     ipprotocol = _get_child_text(rule_elem, "ipprotocol", "")
     protocol = _get_child_text(rule_elem, "protocol", "")
     descr = _get_child_text(rule_elem, "descr", "")
     tracker = _get_child_text(rule_elem, "tracker", "")
-    # Floating: <floating>yes</floating>, or no interface, or from floatingrules section (set later).
-    is_floating = floating_from_tag or not interface or interface == ""
 
     return {
         "type": rule_type,
@@ -319,13 +316,11 @@ def parse_opnsense_backup(xml_path):
 
 def _parse_opnsense_rule(rule_elem):
     """Parse a single OPNSense rule element (backup XML uses <type> and <descr>)."""
-    # Backup XML uses type/descr; API uses action/description.
     action = _get_child_text(rule_elem, "type", "") or _get_child_text(rule_elem, "action", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
-    # Floating rules can have <floating>yes</floating> and still have <interface> (e.g. lan,wan for direction).
     floating_tag = _get_child_text(rule_elem, "floating", "")
-    floating_from_tag = (floating_tag or "").strip().lower() in ("yes", "1", "true")
-    
+    is_floating = is_floating_flag(floating_tag) or is_interface_floating(interface)
+
     source = rule_elem.find("source")
     dest = rule_elem.find("destination")
     source_val = _extract_address(source) or "any"
@@ -334,8 +329,6 @@ def _parse_opnsense_rule(rule_elem):
     ipprotocol = _get_child_text(rule_elem, "ipprotocol", "")
     protocol = _get_child_text(rule_elem, "protocol", "")
     descr = _get_child_text(rule_elem, "descr", "") or _get_child_text(rule_elem, "description", "")
-    
-    is_floating = floating_from_tag or not interface or interface == ""
     
     return {
         "action": action or "pass",
@@ -360,7 +353,8 @@ def _parse_opnsense_rule_26_1(rule_elem):
     action = _get_child_text(rule_elem, "action", "pass")
     interface = _get_child_text(rule_elem, "interface", "")
     floating_tag = _get_child_text(rule_elem, "floating", "")
-    floating_from_tag = (floating_tag or "").strip().lower() in ("yes", "1", "true")
+    is_floating = is_floating_flag(floating_tag) or is_interface_floating(interface)
+
     source_val = _get_child_text(rule_elem, "source_net", "") or "any"
     dest_val = _get_child_text(rule_elem, "destination_net", "") or "any"
     dst_port = _get_child_text(rule_elem, "destination_port", "")
@@ -368,7 +362,6 @@ def _parse_opnsense_rule_26_1(rule_elem):
     protocol = _get_child_text(rule_elem, "protocol", "")
     descr = _get_child_text(rule_elem, "description", "")
     enabled = _get_child_text(rule_elem, "enabled", "1") == "1"
-    is_floating = floating_from_tag or not interface or interface == ""
     return {
         "action": action or "pass",
         "type": action or "pass",  # Same as action (pass/block/reject), for consistency with pfSense.
