@@ -38,8 +38,17 @@ def normalize_ports(port_field, any_value="Any"):
 
 
 def safe_filename(name):
-    """Return a filesystem-safe version of the string."""
-    return name.replace('/', '_').replace(' ', '_').replace('<', '').replace('>', '')
+    """Return a filesystem-safe version of the string (no / , space < > in filename)."""
+    return (name or "").replace('/', '_').replace(' ', '_').replace(',', '_').replace('<', '').replace('>', '')
+
+
+def normalize_interface(entry_interface):
+    """Return interface as string (API may return list e.g. pfSense). Handles None, list, str."""
+    if entry_interface is None:
+        return ""
+    if isinstance(entry_interface, list):
+        return ",".join(str(x).strip() for x in entry_interface) if entry_interface else ""
+    return str(entry_interface).strip()
 
 def extract_host_from_url(url):
     """Return host (IP or domain) from URL."""

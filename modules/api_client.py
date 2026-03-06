@@ -7,7 +7,7 @@ import urllib3
 import logging
 import traceback
 from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
-from modules.utils import extract_base_url, update_api_maps
+from modules.utils import extract_base_url, update_api_maps, normalize_interface
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -23,6 +23,48 @@ class APIClient:
         self.port_map = {}
         self.alias_details = {}  # Full alias details: {alias_name: {type, content, description}}.
     
+    _INVALID_INTERFACE_VALUES = frozenset({"1", "any", "(self)", "", "none", "null"})
+
+    def _filter_valid_interfaces(self, interfaces):
+        """Filter and sort interface names: keep wan, lan, opt*; drop invalid values."""
+        valid = []
+        for iface in interfaces:
+            iface_str = str(iface).lower().strip()
+            if iface_str in self._INVALID_INTERFACE_VALUES:
+                continue
+            if iface_str in ("wan", "lan") or iface_str.startswith("opt"):
+                valid.append(iface_str)
+                logging.debug(f"Accepted interface: {iface_str}")
+            else:
+                logging.debug(f"Rejected interface candidate: {iface_str} (doesn't match pattern)")
+        return sorted(set(valid))
+
+    def _log_no_rules_error(self):
+        """Log standard message when no rules were retrieved."""
+        logging.error("No rules retrieved. Please check:")
+        logging.error("  1. API credentials are correct")
+        logging.error("  2. API URL is correct")
+        logging.error("  3. Firewall allows API access from this IP")
+        logging.error("  4. Run with --debug flag for more details")
+
+    def _get_list_from_response(self, response, key="data", context=""):
+        """Extract a list from JSON response. Returns [] if response is None, invalid, or key is not a list."""
+        if not response:
+            return []
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                return []
+            lst = data.get(key, [])
+            if not isinstance(lst, list):
+                msg = f"Unexpected {context} data format" if context else f"Unexpected data format for key '{key}'"
+                logging.warning(f"{msg}: {type(lst)}")
+                return []
+            return lst
+        except (ValueError, TypeError, KeyError) as e:
+            logging.debug(f"Error parsing response: {e}")
+            return []
+
     def _handle_api_error(self, operation, url, error, log_level=logging.WARNING):
         """
         Centralized error handling for API requests.
@@ -151,13 +193,7 @@ class APIClient:
         
         if response:
             try:
-                data = response.json()
-                aliases = data.get("data", []) if isinstance(data, dict) else data
-                
-                if not isinstance(aliases, list):
-                    logging.warning(f"Unexpected aliases data format: {type(aliases)}")
-                    aliases = []
-                
+                aliases = self._get_list_from_response(response, key="data", context="aliases")
                 for alias in aliases:
                     if not isinstance(alias, dict):
                         continue
@@ -205,13 +241,7 @@ class APIClient:
         )
         if response:
             try:
-                data = response.json()
-                interfaces = data.get("data", []) if isinstance(data, dict) else data
-                
-                if not isinstance(interfaces, list):
-                    logging.warning(f"Unexpected interfaces data format: {type(interfaces)}")
-                    interfaces = []
-                
+                interfaces = self._get_list_from_response(response, key="data", context="interfaces")
                 for iface in interfaces:
                     if not isinstance(iface, dict):
                         continue
@@ -428,19 +458,10 @@ class APIClient:
         
         if response:
             try:
-                data = response.json()
-                all_rules = data.get("data", [])
-                
-                if not isinstance(all_rules, list):
-                    logging.warning(f"Unexpected rules data format: {type(all_rules)}")
-                    all_rules = []
-                
+                all_rules = self._get_list_from_response(response, key="data", context="rules")
                 logging.info(f"  → {len(all_rules)} global rules retrieved")
-                
                 if not all_rules:
                     logging.warning("No rules found in global response. Check API credentials and URL.")
-                    logging.debug(f"Response data: {data}")
-                
                 for entry in all_rules:
                     if not isinstance(entry, dict):
                         continue
@@ -470,13 +491,7 @@ class APIClient:
                 
                 if response:
                     try:
-                        data = response.json()
-                        entries = data.get("data", [])
-                        
-                        if not isinstance(entries, list):
-                            logging.warning(f"Unexpected rules data format for {interface}: {type(entries)}")
-                            entries = []
-                        
+                        entries = self._get_list_from_response(response, key="data", context=f"rules for {interface}")
                         # Filter entries by interface if API does not support filtering.
                         if entries:
                             filtered_entries = [e for e in entries if isinstance(e, dict) and e.get("interface", "").lower() == interface.lower()]
@@ -500,22 +515,20 @@ class APIClient:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
             self._normalize_floating_rules(all_entries)
         else:
-            logging.error("No rules retrieved. Please check:")
-            logging.error("  1. API credentials are correct")
-            logging.error("  2. API URL is correct")
-            logging.error("  3. Firewall allows API access from this IP")
-            logging.error("  4. Run with --debug flag for more details")
-        
+            self._log_no_rules_error()
         return all_entries
-    
+
     def _normalize_floating_rules(self, entries):
-        """Set entry['floating'] from interface so API matches backup tagging."""
+        """Set entry['floating'] from interface or API flag so API matches backup tagging."""
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            if entry.get("floating") is not True and not entry.get("interface"):
+            iface = normalize_interface(entry.get("interface")).lower()
+            api_floating = entry.get("floating")
+            is_floating_api = api_floating in (True, 1, "1", "yes", "true")
+            if iface == "floating" or is_floating_api or not iface:
                 entry["floating"] = True
-            elif entry.get("floating") is not True:
+            else:
                 entry["floating"] = False
     
     def _fetch_opnsense_rules(self):
@@ -531,15 +544,20 @@ class APIClient:
             else:
                 logging.warning("Could not auto-detect interfaces. Will fetch all rules globally.")
                 logging.warning("To improve accuracy, please specify interfaces in config.py: INTERFACES = ['wan', 'lan', 'opt1', ...]")
-                # Continue anyway: fetch all rules globally.
+                # Still fetch floating rules when no interfaces detected.
                 interfaces_to_process = []
         else:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")
         
+        # Always include "floating" so floating rules are fetched from OPNsense API.
+        if "floating" not in [str(i).lower() for i in interfaces_to_process]:
+            interfaces_to_process = list(interfaces_to_process) + ["floating"]
+            logging.info("Including 'floating' interface to fetch floating rules")
+        
         all_entries = []
         seen_rule_ids = set()
+        entries_by_id = {}  # uuid -> entry; per-interface responses update ipprotocol/protocol
         
-        # Method 1: global rules (always try first).
         logging.debug(f"Fetching OPNSense global rules from: {self.config.opns_url}")
         params = {"show_all": "1"}
         response = self._make_api_request(
@@ -552,19 +570,10 @@ class APIClient:
         
         if response:
             try:
-                data = response.json()
-                all_rules = data.get("rows", [])
-                
-                if not isinstance(all_rules, list):
-                    logging.warning(f"Unexpected rules data format: {type(all_rules)}")
-                    all_rules = []
-                
+                all_rules = self._get_list_from_response(response, key="rows", context="rules")
                 logging.info(f"  → {len(all_rules)} global rules retrieved")
-                
                 if not all_rules:
                     logging.warning("No rules found in global response. Check API credentials and URL.")
-                    logging.debug(f"Response data: {data}")
-                
                 for entry in all_rules:
                     if not isinstance(entry, dict):
                         continue
@@ -572,11 +581,12 @@ class APIClient:
                     if rule_id and rule_id not in seen_rule_ids:
                         seen_rule_ids.add(rule_id)
                         all_entries.append(entry)
+                        if rule_id:
+                            entries_by_id[rule_id] = entry
             except (ValueError, KeyError, TypeError) as e:
                 logging.error(f"Error parsing OPNSense rules response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
         
-        # Method 2: per-interface rules (if interfaces were specified or detected).
         if interfaces_to_process:
             for interface in interfaces_to_process:
                 logging.info(f"Fetching rules for interface: {interface}")
@@ -592,22 +602,25 @@ class APIClient:
                 
                 if response:
                     try:
-                        data = response.json()
-                        entries = data.get("rows", [])
-                        
-                        if not isinstance(entries, list):
-                            logging.warning(f"Unexpected rules data format for {interface}: {type(entries)}")
-                            entries = []
-                        
+                        entries = self._get_list_from_response(response, key="rows", context=f"rules for {interface}")
                         logging.info(f"  → {len(entries)} rules found for {interface}")
                         
+                        is_floating_interface = (str(interface).strip().lower() == "floating")
                         for entry in entries:
                             if not isinstance(entry, dict):
                                 continue
+                            if is_floating_interface:
+                                entry["floating"] = True
+                                entry["interface"] = "floating"
                             rule_id = entry.get("uuid") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
-                            if rule_id and rule_id not in seen_rule_ids:
+                            if rule_id in entries_by_id:
+                                existing = entries_by_id[rule_id]
+                                existing.update(entry)
+                            elif rule_id and rule_id not in seen_rule_ids:
                                 seen_rule_ids.add(rule_id)
                                 all_entries.append(entry)
+                                if rule_id:
+                                    entries_by_id[rule_id] = entry
                     except (ValueError, KeyError, TypeError) as e:
                         logging.warning(f"Error parsing OPNSense rules response for {interface}: {e}")
                         logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
@@ -618,14 +631,9 @@ class APIClient:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
             self._normalize_floating_rules(all_entries)
         else:
-            logging.error("No rules retrieved. Please check:")
-            logging.error("  1. API credentials are correct")
-            logging.error("  2. API URL is correct")
-            logging.error("  3. Firewall allows API access from this IP")
-            logging.error("  4. Run with --debug flag for more details")
-        
+            self._log_no_rules_error()
         return all_entries
-    
+
     def _detect_pfsense_interfaces(self):
         """Auto-detect interface list from pfSense API."""
         interfaces = set()
@@ -647,17 +655,8 @@ class APIClient:
         
         if response:
             try:
-                data = response.json()
-                logging.debug(f"Response data structure: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                
-                interfaces_list = data.get("data", []) if isinstance(data, dict) else data
-                
-                if not isinstance(interfaces_list, list):
-                    logging.warning(f"Unexpected interfaces data format: {type(interfaces_list)}")
-                    interfaces_list = []
-                
+                interfaces_list = self._get_list_from_response(response, key="data", context="interfaces")
                 logging.debug(f"Found {len(interfaces_list)} interface entries")
-                
                 for iface in interfaces_list:
                     if isinstance(iface, dict):
                         # Get interface identifier (wan, lan, opt1, etc.).
@@ -692,16 +691,13 @@ class APIClient:
             
             if response:
                 try:
-                    data = response.json()
-                    if isinstance(data, dict):
-                        interfaces_list = data.get("data", [])
-                        if isinstance(interfaces_list, list):
-                            for iface in interfaces_list:
-                                if isinstance(iface, dict):
-                                    if_name = iface.get("if", "").lower()
-                                    if if_name and if_name not in ["lo0", "enc0", "pflog0"]:
-                                        logging.debug(f"Found interface from fallback endpoint: {if_name}")
-                                        interfaces.add(if_name)
+                    interfaces_list = self._get_list_from_response(response, key="data", context="interfaces")
+                    for iface in interfaces_list:
+                        if isinstance(iface, dict):
+                            if_name = iface.get("if", "").lower()
+                            if if_name and if_name not in ["lo0", "enc0", "pflog0"]:
+                                logging.debug(f"Found interface from fallback endpoint: {if_name}")
+                                interfaces.add(if_name)
                 except (ValueError, KeyError, TypeError) as e:
                     logging.debug(f"Error parsing pfSense interfaces fallback response: {e}")
         
@@ -719,24 +715,19 @@ class APIClient:
             
             if response:
                 try:
-                    data = response.json()
-                    logging.debug(f"Rules response structure: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                    
-                    rules = data.get("data", [])
-                    
-                    if not isinstance(rules, list):
-                        logging.warning(f"Unexpected rules data format: {type(rules)}")
-                        rules = []
-                    
+                    rules = self._get_list_from_response(response, key="data", context="rules")
                     logging.debug(f"Found {len(rules)} rule entries")
-                    
                     for i, entry in enumerate(rules):
                         if isinstance(entry, dict):
-                            # Check interface field.
+                            # Check interface field (pfSense API may return list).
                             if "interface" in entry and entry["interface"]:
-                                iface = entry["interface"].lower()
-                                logging.debug(f"Rule {i}: interface = {iface}")
-                                interfaces.add(iface)
+                                iface = entry["interface"]
+                                if isinstance(iface, list):
+                                    for item in iface:
+                                        if item:
+                                            interfaces.add(str(item).lower())
+                                else:
+                                    interfaces.add(str(iface).lower())
                             # Also check source/destination for interface references.
                             for field in ["source", "destination"]:
                                 if field in entry and isinstance(entry[field], dict):
@@ -750,30 +741,14 @@ class APIClient:
                     logging.debug(f"Error parsing pfSense rules for interface extraction: {e}")
         
         logging.debug(f"All collected interface candidates: {sorted(interfaces)}")
-        
-        # Filter and sort valid interfaces.
-        valid_interfaces = []
-        for iface in interfaces:
-            iface_str = str(iface).lower().strip()
-            # Ignore invalid values.
-            if iface_str and iface_str not in ["1", "any", "(self)", "", "none", "null"]:
-                # Accept standard interface names (wan, lan, opt*).
-                if iface_str in ["wan", "lan"] or iface_str.startswith("opt"):
-                    valid_interfaces.append(iface_str)
-                    logging.debug(f"Accepted interface: {iface_str}")
-                else:
-                    logging.debug(f"Rejected interface candidate: {iface_str} (doesn't match pattern)")
-        
-        valid_interfaces = sorted(list(set(valid_interfaces)))
-        
+        valid_interfaces = self._filter_valid_interfaces(interfaces)
         if valid_interfaces:
             logging.info(f"✓ Auto-detected interfaces: {valid_interfaces}")
             return valid_interfaces
-        
         logging.warning(f"No valid interfaces auto-detected. Collected candidates were: {sorted(interfaces)}")
         logging.warning("Please manually specify interfaces in config.py: INTERFACES = ['wan', 'lan', 'opt1', ...]")
         return []
-    
+
     def _detect_opnsense_interfaces(self):
         """Auto-detect interface list from OPNSense API."""
         interfaces = set()
@@ -794,41 +769,29 @@ class APIClient:
         
         if response:
             try:
-                data = response.json()
-                logging.debug(f"Response data structure: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                
-                if isinstance(data, dict) and "rows" in data:
-                    rows = data.get("rows", [])
-                    
-                    if not isinstance(rows, list):
-                        logging.warning(f"Unexpected interfaces data format: {type(rows)}")
-                        rows = []
-                    
-                    logging.debug(f"Found {len(rows)} interface entries in 'rows'")
-                    
-                    for row in rows:
-                        if isinstance(row, dict):
-                            # Get identifier (wan, lan, etc.).
-                            identifier = row.get("identifier", "")
-                            enabled = row.get("enabled", False)
-                            
-                            # Only add enabled interfaces; skip system interfaces.
-                            if (identifier and 
-                                identifier not in ["lo0", "enc0", "pflog0", ""] and
-                                enabled):
-                                logging.debug(f"Found enabled interface identifier: {identifier}")
-                                interfaces.add(identifier)
-                            
-                            # Fallback: config.if for device name.
-                            config = row.get("config", {})
-                            if isinstance(config, dict):
-                                if_name = config.get("if", "")
-                                if (if_name and 
-                                    if_name not in ["lo0", "enc0", "pflog0"] and
-                                    enabled and
-                                    not identifier):  # Only use if no identifier found
-                                    logging.debug(f"Using device name as fallback: {if_name}")
-                                    interfaces.add(if_name)
+                rows = self._get_list_from_response(response, key="rows", context="interfaces")
+                logging.debug(f"Found {len(rows)} interface entries in 'rows'")
+                for row in rows:
+                    if isinstance(row, dict):
+                        # Get identifier (wan, lan, etc.).
+                        identifier = row.get("identifier", "")
+                        enabled = row.get("enabled", False)
+                        # Only add enabled interfaces; skip system interfaces.
+                        if (identifier and
+                            identifier not in ["lo0", "enc0", "pflog0", ""] and
+                            enabled):
+                            logging.debug(f"Found enabled interface identifier: {identifier}")
+                            interfaces.add(identifier)
+                        # Fallback: config.if for device name.
+                        config = row.get("config", {})
+                        if isinstance(config, dict):
+                            if_name = config.get("if", "")
+                            if (if_name and
+                                if_name not in ["lo0", "enc0", "pflog0"] and
+                                enabled and
+                                not identifier):
+                                logging.debug(f"Using device name as fallback: {if_name}")
+                                interfaces.add(if_name)
             except (ValueError, KeyError, TypeError) as e:
                 logging.debug(f"Error parsing OPNSense interfaces response: {e}")
         
@@ -849,17 +812,8 @@ class APIClient:
             
             if response:
                 try:
-                    data = response.json()
-                    logging.debug(f"Rules response structure: {type(data)}, keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
-                    
-                    rows = data.get("rows", [])
-                    
-                    if not isinstance(rows, list):
-                        logging.warning(f"Unexpected rules data format: {type(rows)}")
-                        rows = []
-                    
+                    rows = self._get_list_from_response(response, key="rows", context="rules")
                     logging.debug(f"Found {len(rows)} rule entries")
-                    
                     for i, entry in enumerate(rows):
                         if isinstance(entry, dict):
                             if "interface" in entry and entry["interface"]:
@@ -879,26 +833,10 @@ class APIClient:
                     logging.debug(f"Error parsing OPNSense rules for interface extraction: {e}")
         
         logging.debug(f"All collected interface candidates: {sorted(interfaces)}")
-        
-        # Filter and sort valid interfaces.
-        valid_interfaces = []
-        for iface in interfaces:
-            iface_str = str(iface).lower().strip()
-            # Ignore invalid values.
-            if iface_str and iface_str not in ["1", "any", "(self)", "", "none", "null"]:
-                # Accept standard interface names (wan, lan, opt*).
-                if iface_str in ["wan", "lan"] or iface_str.startswith("opt"):
-                    valid_interfaces.append(iface_str)
-                    logging.debug(f"Accepted interface: {iface_str}")
-                else:
-                    logging.debug(f"Rejected interface candidate: {iface_str} (doesn't match pattern)")
-        
-        valid_interfaces = sorted(list(set(valid_interfaces)))
-        
+        valid_interfaces = self._filter_valid_interfaces(interfaces)
         if valid_interfaces:
             logging.info(f"✓ Auto-detected interfaces: {valid_interfaces}")
             return valid_interfaces
-        
         logging.warning(f"No valid interfaces auto-detected. Collected candidates were: {sorted(interfaces)}")
         logging.warning("Please manually specify interfaces in config.py: INTERFACES = ['wan', 'lan', 'opt1', ...]")
         return []

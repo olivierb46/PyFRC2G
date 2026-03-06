@@ -148,8 +148,8 @@ If you want to automatically upload generated PDFs to CISO Assistant as evidence
 CISO_URL = "https://ciso-assistant.example.com"
 CISO_TOKEN = "YOUR_CISO_ASSISTANT_API_TOKEN"
 CISO_EVIDENCE_PATH = f"{CISO_URL}/api/evidence-revisions/"
-CISO_FORLDER_ID = "<CISO_FOLDER_ID>" # Domain ID from CISO Assistant to which the evidence is linked.
-CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID> # Evidence ID from CISO Assistant
+CISO_FORLDER_ID = "<CISO_FOLDER_ID>"  # Folder ID from CISO Assistant to which the evidence is linked.
+CISO_EVIDENCE_ID = "<CISO_EVIDENCE_ID>"  # Evidence ID from CISO Assistant.
 ```
 
 **Note:** Leave these as default values (`<CISO_ASSISTANT_ADDRESS>`, etc.) to disable CISO Assistant integration.
@@ -292,15 +292,34 @@ results/PFS01/
 
 ## 📊 Output Format
 
+### CSV Columns
+
+The temporary and per-interface CSV files use the same columns for both pfSense and OPNsense:
+
+| Column      | Description |
+|------------|-------------|
+| SOURCE     | Source network or address (mapped from API aliases when available) |
+| GATEWAY    | Gateway name and interface(s), e.g. `OPNS01/wan,lan` or `OPNS01/Floating-rules` |
+| ACTION     | Pass, block, reject (mapped to display value) |
+| PROTOCOL   | IP layer and protocol: `IPv4 tcp`, `IPv6 udp`, `IPv4+IPv6 Any`, etc. Empty protocol is shown as `Any`. |
+| PORT       | Destination port or range |
+| DESTINATION| Destination network or address |
+| COMMENT    | Rule description |
+| DISABLED   | True / False |
+| FLOATING   | True for floating rules |
+| RULE ORDER | Rule order index |
+
+### PDF Content
+
 The generated PDFs contain:
 
 - **One page per interface** with flow diagrams
-- **One page for floating rules**
+- **One page for floating rules** when applicable
 - **Graphical flow diagrams** showing:
   - **Sources**: Network/host sources
   - **Gateway/Interface**: Firewall interface name
   - **Actions**: PASS (green) / BLOCK (red) with color coding
-  - **Protocols**: IP protocol (TCP, UDP, ICMP, etc.)
+  - **Protocols**: IP protocol (e.g. IPv4 tcp, IPv6 Any)
   - **Ports**: Destination ports or port ranges
   - **Destinations**: Network/host destinations
   - **Comments**: Rule descriptions
@@ -375,19 +394,69 @@ PyFRC2G/
 - Uploads generated PDFs as evidence revisions
 - Handles authentication and error reporting
 
-## 🔍 Automatic Interface Detection (OPNSense)
+## 🔍 pfSense: Interfaces and Rules
+
+### Automatic Interface Detection
+
+When `INTERFACES` is empty, the package tries to detect pfSense interfaces in this order:
+
+1. **Interfaces API (v2)** — `GET /api/v2/interfaces`; uses `id` of each enabled interface (skips `lo0`, `enc0`, `pflog0`).
+2. **Fallback (v1)** — `GET /api/v1/firewall/interface`; uses the `if` field from the response.
+3. **From firewall rules** — If both above fail, interfaces are extracted from the list of rules returned by the global rules API.
+
+If detection fails, rules are still fetched globally; for per-interface CSV/PDF you can set `INTERFACES = ["wan", "lan", "opt1"]` in `modules/config.py`.
+
+### Rules Fetching (pfSense)
+
+1. **Global rules** — Fetched first from the pfSense firewall rules endpoint (`data` in the response).
+2. **Per-interface rules** — If interfaces were specified or detected, rules are also requested per interface (with `interface` query when supported); entries are filtered by interface so each rule appears under the correct interface.
+
+Rule identity uses `tracker` or `id`. The same `_normalize_floating_rules` logic applies: rules with interface `floating` or no interface are tagged as floating; the GATEWAY column shows the interface list or "Floating-rules" accordingly. The API may return `interface` as a list (e.g. multiple interfaces); it is normalized for display.
+
+### Example Logs
+
+```
+INFO:root:Attempting auto-detection of interfaces...
+INFO:root:✓ 2 interfaces detected: ['wan', 'lan']
+INFO:root:  → 85 global rules retrieved
+INFO:root:Fetching rules for interface: wan
+INFO:root:  → 24 rules found for wan
+INFO:root:Fetching rules for interface: lan
+INFO:root:  → 32 rules found for lan
+INFO:root:✓ Total of 85 unique rules retrieved
+```
+
+## 🔍 OPNsense: Interfaces and Rules
+
+### Automatic Interface Detection
 
 The package attempts multiple methods to automatically detect interfaces:
 
 1. **Interface API**: `/api/core/interfaces/listAll` or `/api/core/interfaces/list`
 2. **From Firewall Rules**: Analyzes all rules to extract used interfaces
-3. **Fallback**: If auto-detection fails, you must manually specify interfaces
+3. **Fallback**: If auto-detection fails, specify interfaces manually in `INTERFACES`
+
+The **floating** interface is always included so that floating rules are fetched from the API.
+
+### Rules Fetching (OPNSense)
+
+Rules are retrieved in two steps for accurate protocol information:
+
+1. **Global rules** — Fetched first to get the full list (with `show_all=1`).
+2. **Per-interface rules** — Fetched for each interface (lan, wan, floating, etc.). When a rule already exists (same UUID), its fields (e.g. `ipprotocol`, `protocol`) are updated from the per-interface response, which often contains complete data.
+
+Floating rules are tagged (`floating=True`, `interface=floating`). The GATEWAY column shows `Floating-rules` for floating-only rules, or the interface list (e.g. `wan,lan`) when the rule is bound to specific interfaces.
 
 ### Detection Logs
 
 ```
 INFO:root:Attempting auto-detection of interfaces...
-INFO:root:✓ Auto-detected interfaces: ['wan', 'lan', 'opt1', 'opt2']
+INFO:root:✓ Auto-detected interfaces: ['lan', 'wan']
+INFO:root:Including 'floating' interface to fetch floating rules
+INFO:root:  → 42 global rules retrieved
+INFO:root:Fetching rules for interface: lan
+...
+INFO:root:✓ Total of 42 unique rules retrieved
 ```
 
 ## 🛠️ Troubleshooting
@@ -473,10 +542,11 @@ If you were using an older version:
 - **Configuration check** — Validates config before API mode (`config_checker.py`, overridable with `--skip-config-check`)
 - **XML backup parser** — Rules and aliases read from pfSense/OPNSense backup files without API
 - **API-based aliases** — No manual alias file in API mode; aliases fetched from API
-- **Per-interface output** — Separate CSV and PDF per interface
+- **Per-interface output** — Separate CSV and PDF per interface; filenames sanitized
+- **PROTOCOL column** — Unified format for pfSense and OPNsense: `ipprotocol` + `protocol` (e.g. `IPv4 tcp`, `IPv6 Any`). Empty protocol is displayed as `Any`.
 - **CISO Assistant** — Automatic upload of generated PDFs as evidence revisions
 - **Change detection** — Graphs regenerated only when rules change (MD5 comparison)
-- **OPNSense support** — Full support for OPNSense firewalls
+- **OPNSense support** — Full support for OPNsense firewalls
 
 ## 📝 Todo
 

@@ -19,15 +19,28 @@ from modules.utils import (
     get_source_val,
     get_dest_val,
     get_port_val,
+    normalize_interface,
 )
 
 
 def _gateway_from_entry(entry, config):
-    """Build GATEWAY cell from entry (gateway_name/interface or Floating-rules)."""
-    entry_interface = entry.get("interface")
+    """Build GATEWAY cell: gateway_name/interfaces (e.g. pfSense/wan,lan). Use map_value for interface. Floating-rules only when no interface."""
+    entry_interface = normalize_interface(entry.get("interface"))
+    if entry_interface and entry_interface.strip().lower() == "floating":
+        return f"{config.gateway_name}/Floating-rules"
     if entry_interface:
         return f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}"
     return f"{config.gateway_name}/Floating-rules"
+
+
+def _protocol_from_entry(entry):
+    """Build PROTOCOL cell from ipprotocol + protocol (e.g. 'IPv4 tcp', 'IPv6 Any'). Empty protocol → 'Any'."""
+    ipp = (entry.get("ipprotocol") or "").strip()
+    prot = (entry.get("protocol") or "").strip()
+    prot_display = prot or "Any"
+    if ipp:
+        return f"{ipp} {prot_display}"
+    return prot or "Any"
 
 
 def _is_floating_entry(entry):
@@ -36,33 +49,32 @@ def _is_floating_entry(entry):
 
 
 def _entry_to_csv_row(entry, config, gateway_type, gateway, rule_order):
-    """Convert one rule entry to a CSV row dict for pfSense or OPNSense."""
+    """Convert one rule entry to a CSV row dict (pfSense and OPNsense share the same columns)."""
     floating = _is_floating_entry(entry)
     if gateway_type == "pfsense":
-        return {
-            "SOURCE": map_value(entry.get("source"), "source", config.any_value),
-            "GATEWAY": gateway,
-            "ACTION": map_value(entry.get("type"), None, config.any_value),
-            "PROTOCOL": map_value(entry.get("protocol"), None, config.any_value),
-            "PORT": map_value(entry.get("destination_port"), "destination_port", config.any_value),
-            "DESTINATION": map_value(entry.get("destination"), "destination", config.any_value),
-            "COMMENT": map_value(entry.get("descr"), None, config.any_value),
-            "DISABLED": "True" if entry.get("disabled") else "False",
-            "FLOATING": "True" if floating else "False",
-            "RULE ORDER": rule_order,
-        }
-    # OPNSense: action/type (pass, block, reject).
-    action = entry.get("action") or entry.get("type")
-    disabled = not entry.get("enabled", True)  # OPNsense 26.1+ uses <enabled>0</enabled> for disabled rules.
+        source = entry.get("source")
+        action = entry.get("type")
+        port = entry.get("destination_port")
+        dest = entry.get("destination")
+        comment = entry.get("descr")
+        disabled = "True" if entry.get("disabled") else "False"
+    else:
+        source = get_source_val(entry)
+        action = entry.get("action") or entry.get("type")
+        port = get_port_val(entry)
+        dest = get_dest_val(entry)
+        comment = entry.get("description")
+        disabled = "True" if not entry.get("enabled", True) else "False"
+    protocol = _protocol_from_entry(entry)
     return {
-        "SOURCE": map_value(get_source_val(entry), "source", config.any_value),
+        "SOURCE": map_value(source, "source", config.any_value),
         "GATEWAY": gateway,
         "ACTION": map_value(action, None, config.any_value),
-        "PROTOCOL": map_value(entry.get("protocol"), None, config.any_value),
-        "PORT": map_value(get_port_val(entry), "destination_port", config.any_value),
-        "DESTINATION": map_value(get_dest_val(entry), "destination", config.any_value),
-        "COMMENT": map_value(entry.get("description"), None, config.any_value),
-        "DISABLED": "True" if disabled else "False",
+        "PROTOCOL": map_value(protocol, None, config.any_value),
+        "PORT": map_value(port, "destination_port", config.any_value),
+        "DESTINATION": map_value(dest, "destination", config.any_value),
+        "COMMENT": map_value(comment, None, config.any_value),
+        "DISABLED": disabled,
         "FLOATING": "True" if floating else "False",
         "RULE ORDER": rule_order,
     }
