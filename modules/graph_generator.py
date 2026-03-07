@@ -7,6 +7,7 @@ import glob
 import csv
 import logging
 import hashlib
+import textwrap
 from collections import OrderedDict
 from graphviz import Digraph
 from modules.utils import normalize_ports, safe_filename, map_value, format_alias_label
@@ -184,7 +185,8 @@ class GraphGenerator:
                 with g.subgraph(name=f"cluster_{source.replace(' ', '_')}") as sg:
                     sg.attr(label=f"SOURCE : {source}", style="dashed", color="#aaaaaa")
                     for nid, color, label in cluster["nodes"].values():
-                        sg.node(nid, label=label, shape="record", 
+                        wrapped = r"\n".join(textwrap.wrap(label, width=40))
+                        sg.node(nid, label=wrapped, shape="record",
                                **({"style":"filled","fillcolor":color} if color else {}))
                     for src, dst in cluster["edges"]:
                         sg.edge(src, dst)
