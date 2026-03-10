@@ -6,7 +6,6 @@ Convert pfSense and OPNSense firewall rules into graphical flow diagrams.
 __version__ = "2.0.1"
 __author__ = "PyFRC2G Contributors"
 
-# Lightweight imports only (no graphviz/requests here so that "pyfrc2g -h" works without deps).
 from pyfrc2g.config import Config
 from pyfrc2g.utils import (
     calculate_md5,

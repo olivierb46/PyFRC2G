@@ -11,11 +11,27 @@ import logging
 import shutil
 from pathlib import Path
 
-# Lazy imports for deps used only in _run(): Config, APIClient, GraphGenerator, CISOCClient, utils, etc.
+from pyfrc2g.utils import (
+    calculate_md5,
+    map_value,
+    update_api_maps,
+    get_source_val,
+    get_dest_val,
+    get_port_val,
+    normalize_interface,
+)
+
+# Lazy imports for heavy deps used only in _run(): Config, APIClient, GraphGenerator, CISOCClient
 
 
-def _check_dependencies():
-    """Check that required optional dependencies are installed. Return (True, None) or (False, error_msg)."""
+def check_dependencies():
+    """
+    Verify that required dependencies are installed.
+
+    Returns:
+        tuple: (ok, error_message). ok is True if all deps are installed, else False and error_message
+               contains an "Install with: ..." line.
+    """
     missing = []
     try:
         import requests  # noqa: F401
@@ -129,7 +145,7 @@ def _run_graph_and_pdf_generation(config, graph_generator, ciso_client):
 
 def _run(args):
     """Core execution logic (API or backup mode, CSV, graphs, PDF)."""
-    ok, err = _check_dependencies()
+    ok, err = check_dependencies()
     if not ok:
         print(err, file=sys.stderr)
         return 1
@@ -138,15 +154,6 @@ def _run(args):
     from pyfrc2g.api_client import APIClient
     from pyfrc2g.graph_generator import GraphGenerator
     from pyfrc2g.ciso_client import CISOCClient
-    from pyfrc2g.utils import (
-        calculate_md5,
-        map_value,
-        update_api_maps,
-        get_source_val,
-        get_dest_val,
-        get_port_val,
-        normalize_interface,
-    )
 
     backup_file = args.backup if args and hasattr(args, "backup") and args.backup else None
     gateway_name_override = args.gateway_name if args and hasattr(args, "gateway_name") and args.gateway_name else None
@@ -309,6 +316,11 @@ Examples:
         action="store_true",
         help="Skip configuration check before running (API mode only)"
     )
+    parser.add_argument(
+        "--check-deps",
+        action="store_true",
+        help="Check that required packages are installed, then exit (0=OK, 1=missing deps)"
+    )
     return parser.parse_args(argv)
 
 
@@ -323,6 +335,13 @@ def main(argv=None):
         int: Exit code (0 on success).
     """
     args = parse_args(argv)
+    if getattr(args, "check_deps", False):
+        ok, err = check_dependencies()
+        if ok:
+            print("All required packages are installed (requests, graphviz, reportlab).")
+            return 0
+        print(err, file=sys.stderr)
+        return 1
     if args.debug or args.verbose:
         sys.argv = [sys.argv[0], "--debug"]
     log_level = logging.DEBUG if (args.debug or args.verbose) else logging.INFO
