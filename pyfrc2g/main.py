@@ -1,33 +1,46 @@
 """
-Main execution module for PyFRC2G.
+Main entry point for PyFRC2G CLI.
 """
 
+import sys
+import argparse
 import os
 import csv
 import glob
 import logging
-import sys
 import shutil
-from modules.config import Config
-from modules.api_client import APIClient
-from modules.graph_generator import GraphGenerator
-from modules.ciso_client import CISOCClient
-from modules.utils import (
-    calculate_md5,
-    map_value,
-    update_api_maps,
-    get_source_val,
-    get_dest_val,
-    get_port_val,
-    normalize_interface,
-)
+from pathlib import Path
+
+# Lazy imports for deps used only in _run(): Config, APIClient, GraphGenerator, CISOCClient, utils, etc.
+
+
+def _check_dependencies():
+    """Check that required optional dependencies are installed. Return (True, None) or (False, error_msg)."""
+    missing = []
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        missing.append("requests")
+    try:
+        import graphviz  # noqa: F401
+    except ImportError:
+        missing.append("graphviz")
+    try:
+        import reportlab  # noqa: F401
+    except ImportError:
+        missing.append("reportlab")
+    if missing:
+        return False, (
+            f"Missing required package(s): {', '.join(missing)}.\n"
+            "Install with: pip install -r requirements.txt   or   pip install requests graphviz reportlab"
+        )
+    return True, None
 
 
 def _gateway_from_entry(entry, config):
     """Build GATEWAY cell: gateway_name/interfaces. Floating with multiple interfaces (e.g. lan,wan) shows interfaces; else Floating-rules."""
     entry_interface = normalize_interface(entry.get("interface"))
     if entry.get("floating"):
-        # Multiple interfaces (e.g. lan,wan) → show them; otherwise "Floating-rules"
         if entry_interface and "," in entry_interface:
             return f"{config.gateway_name}/{map_value(entry_interface, 'interface', config.any_value)}"
         return f"{config.gateway_name}/Floating-rules"
@@ -114,48 +127,51 @@ def _run_graph_and_pdf_generation(config, graph_generator, ciso_client):
             logging.warning(f"⚠ Failed to upload {stats['failed']} PDF(s) to CISO Assistant")
 
 
-def main(args=None):
-    """
-    Main execution function.
+def _run(args):
+    """Core execution logic (API or backup mode, CSV, graphs, PDF)."""
+    ok, err = _check_dependencies()
+    if not ok:
+        print(err, file=sys.stderr)
+        return 1
 
-    Args:
-        args: Optional argparse.Namespace from pyfrc2g.py (e.g. --backup, --gateway-name).
-    """
-    # Set up logging level (DEBUG if --debug or --verbose is present).
-    log_level = logging.DEBUG if ("--debug" in sys.argv or (args and (args.debug or args.verbose))) else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+    from pyfrc2g.config import Config
+    from pyfrc2g.api_client import APIClient
+    from pyfrc2g.graph_generator import GraphGenerator
+    from pyfrc2g.ciso_client import CISOCClient
+    from pyfrc2g.utils import (
+        calculate_md5,
+        map_value,
+        update_api_maps,
+        get_source_val,
+        get_dest_val,
+        get_port_val,
+        normalize_interface,
     )
-    
+
     backup_file = args.backup if args and hasattr(args, "backup") and args.backup else None
     gateway_name_override = args.gateway_name if args and hasattr(args, "gateway_name") and args.gateway_name else None
     skip_config_check = bool(args and getattr(args, "skip_config_check", False))
-    
+
     use_backup = bool(backup_file)
-    
-    # Configuration check for API mode.
+
     if not use_backup:
-        from modules.config_checker import run_configuration_check
+        from pyfrc2g.config_checker import run_configuration_check
         print("=== Configuration check (API mode) ===")
         if not run_configuration_check(skip_prompt=skip_config_check):
-            print("\n[ERROR] Configuration is missing or invalid. Please edit modules/config.py then run again.")
+            print("\n[ERROR] Configuration is missing or invalid. Please edit pyfrc2g/config.py then run again.")
             print("   Use --backup FILE to read from an XML backup instead of the API.")
             print("   Use --skip-config-check to bypass this check (not recommended).")
             return 2
         print("[OK] Configuration check passed.\n")
-    
+
     if use_backup:
         logging.info(f"Mode: XML backup (no API calls). File: {backup_file}")
-        from pathlib import Path
-        from modules.xml_parser import parse_xml_backup
+        from pyfrc2g.xml_parser import parse_xml_backup
         aliases_dict, entries, gateway_type, gateway_name_from_xml = parse_xml_backup(backup_file)
         if aliases_dict is None:
             return 1
         if not entries:
             logging.warning("No rules found in backup file - output may be empty")
-        # Gateway name: --gateway-name overrides hostname from XML, then filename stem.
         if not gateway_name_override:
             gateway_name_override = gateway_name_from_xml or Path(backup_file).stem
         config = Config(gateway_name_override=gateway_name_override, gateway_type_override=gateway_type)
@@ -171,27 +187,26 @@ def main(args=None):
         api_client = APIClient(config)
         api_client.fetch_aliases()
         entries = api_client.fetch_rules()
-    
+
     graph_generator = GraphGenerator(config)
     ciso_client = CISOCClient(config)
-    
+
     logging.debug(f"Configuration loaded: gateway_type={config.gateway_type}, gateway_name={config.gateway_name}")
     logging.info(f"Starting rule extraction for {config.gateway_type}")
-    
+
     if not use_backup:
         if config.gateway_type.lower() == "pfsense":
             logging.debug(f"pfSense URL: {config.pfs_url}, Base URL: {config.pfs_base_url}")
         elif config.gateway_type.lower() == "opnsense":
             logging.debug(f"OPNSense Base URL: {config.opns_base_url}, Rules URL: {config.opns_url}")
 
-    # Create output directory with gateway name.
     if not os.path.exists(config.graph_output_dir):
         os.makedirs(config.graph_output_dir)
 
     gateway_type_lower = config.gateway_type.lower()
     if gateway_type_lower not in ("pfsense", "opnsense"):
         logging.error(f"Unknown gateway type: {config.gateway_type}. Use 'pfsense' or 'opnsense'.")
-        return
+        return 1
 
     logging.debug(f"Processing {config.gateway_type} rules...")
     if entries:
@@ -200,7 +215,6 @@ def main(args=None):
     else:
         logging.warning(f"No firewall rules retrieved from {config.gateway_type}")
 
-    # Extract rules to CSV.
     with open(config.csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=config.csv_fieldnames)
         writer.writeheader()
@@ -209,21 +223,20 @@ def main(args=None):
             gateway = _gateway_from_entry(entry, config)
             rule_counters[gateway] = rule_counters.get(gateway, 0) + 1
             writer.writerow(_entry_to_csv_row(entry, config, gateway_type_lower, gateway, rule_counters[gateway]))
-    
+
     logging.info(f"✓ CSV file generated: {config.csv_file}")
-    
-    # Check for changes using MD5 (backup mode always generates PDF from XML).
+
     prev_md5 = ""
     if os.path.exists(config.md5_file):
-        with open(config.md5_file, "r") as f:
+        with open(config.md5_file, "r", encoding="utf-8") as f:
             prev_md5 = f.readline().strip()
-    
+
     actual_md5 = calculate_md5(config.csv_file)
-    logging.debug(f"MD5 comparison: previous={prev_md5[:8]}..., current={actual_md5[:8]}...")
-    
+    logging.debug(f"MD5 comparison: previous={prev_md5[:8] if prev_md5 else ''}..., current={actual_md5[:8]}...")
+
     changes_detected = prev_md5 != actual_md5
     if use_backup or changes_detected:
-        with open(config.md5_file, "w") as f:
+        with open(config.md5_file, "w", encoding="utf-8") as f:
             f.write(f"{actual_md5}\n")
         if use_backup and not changes_detected:
             logging.info("Generating graphs from backup...")
@@ -232,15 +245,94 @@ def main(args=None):
         _run_graph_and_pdf_generation(config, graph_generator, ciso_client)
     else:
         logging.info("No rules created or modified")
-    
-    # Remove temporary CSV.
+
     if os.path.exists(config.csv_file):
         os.remove(config.csv_file)
         logging.info("Temporary CSV file deleted")
-    
+
     return 0
+
+
+def parse_args(argv=None):
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="PyFRC2G - Convert pfSense/OPNSense firewall rules to flow diagrams",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Fetch rules from API (configure pyfrc2g/config.py first)
+  pyfrc2g
+  pyfrc2g --api
+
+  # Skip configuration check (use only if you know config is valid)
+  pyfrc2g --api --skip-config-check
+
+  # Read rules from XML backup file (no config check needed)
+  pyfrc2g --backup config-backup.xml
+
+  # Specify gateway name for backup mode
+  pyfrc2g --backup config.xml --gateway-name my-firewall
+
+  # Enable debug logging
+  pyfrc2g --api --debug
+  pyfrc2g --backup config.xml --verbose
+        """
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--api", "-a",
+        action="store_true",
+        help="Fetch rules from firewall API (default if no mode; configure pyfrc2g/config.py)"
+    )
+    mode.add_argument(
+        "--backup", "-b",
+        metavar="FILE",
+        help="Read rules from XML backup file (pfSense or OPNSense config.xml)"
+    )
+    parser.add_argument(
+        "--gateway-name", "-g",
+        metavar="NAME",
+        help="Gateway display name (for backup mode or when not using API)"
+    )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        help="Enable debug logging"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose output (same as --debug)"
+    )
+    parser.add_argument(
+        "--skip-config-check",
+        action="store_true",
+        help="Skip configuration check before running (API mode only)"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """
+    Entry point for the pyfrc2g console script.
+
+    Args:
+        argv: Optional list of arguments (default: sys.argv[1:]).
+
+    Returns:
+        int: Exit code (0 on success).
+    """
+    args = parse_args(argv)
+    if args.debug or args.verbose:
+        sys.argv = [sys.argv[0], "--debug"]
+    log_level = logging.DEBUG if (args.debug or args.verbose) else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    return _run(args) or 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

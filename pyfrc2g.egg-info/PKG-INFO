@@ -1,3 +1,34 @@
+Metadata-Version: 2.4
+Name: pyfrc2g
+Version: 2.0.0
+Summary: Unified Firewall Rules to Graph Converter for pfSense and OPNSense
+Author: PyFRC2G Contributors
+License: MIT
+Project-URL: Homepage, https://github.com/yourusername/PyFRC2G
+Project-URL: Documentation, https://github.com/yourusername/PyFRC2G#readme
+Project-URL: Repository, https://github.com/yourusername/PyFRC2G
+Keywords: firewall,pfsense,opnsense,graph,flow,compliance
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: System Administrators
+Classifier: Topic :: System :: Networking :: Firewalls
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: requests>=2.25.0
+Requires-Dist: graphviz>=0.16
+Requires-Dist: reportlab>=3.6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Dynamic: license-file
+
 # PyFRC2G - Unified Firewall Rules to Graph Converter
 
 Unified Python package to convert **pfSense** and **OPNSense** firewall rules into graphical flow diagrams.

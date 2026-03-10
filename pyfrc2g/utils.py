@@ -126,7 +126,7 @@ def map_value(value, field=None, any_value="Any"):
         return any_value
     if isinstance(value, list):
         value = ", ".join(map(str, value))
-    
+
     # Interface and source mapping.
     if field in ("source", "interface"):
         val = str(value).strip().lower()
@@ -137,13 +137,13 @@ def map_value(value, field=None, any_value="Any"):
             return ", ".join(mapped)
         if val in API_INTERFACE_MAP:
             return API_INTERFACE_MAP[val]
-    
+
     # Port mapping.
     if field == "destination_port":
         val = str(value)
         if val in API_PORT_MAP:
             return API_PORT_MAP[val]
-    
+
     # Destination mapping (networks, addresses, interfaces).
     if field == "destination":
         val = str(value).lower()
@@ -162,12 +162,12 @@ def map_value(value, field=None, any_value="Any"):
             elif potential_interface.startswith('opt') and potential_interface[3:].isdigit():
                 # For opt1ip, opt2ip, etc.
                 interface_name = potential_interface
-        
+
         if interface_name and interface_name in API_INTERFACE_MAP:
             interface_desc = API_INTERFACE_MAP[interface_name]
             # Return "{Interface Description} Address".
             return f"{interface_desc} Address"
-        
+
         # Check interface map (interfaces can be destinations but not gateway addresses).
         if val in API_INTERFACE_MAP:
             return API_INTERFACE_MAP[val]
@@ -175,7 +175,7 @@ def map_value(value, field=None, any_value="Any"):
             return API_NET_MAP[val]
         if val in API_ADDRESS_MAP:
             return API_ADDRESS_MAP[val]
-    
+
     return value
 
 
@@ -215,7 +215,7 @@ def format_alias_label(value, default_label=None):
     """Return label with alias details if available."""
     if not value:
         return default_label or value
-    
+
     alias_info = get_alias_details(value)
     if alias_info:
         parts = []
@@ -234,6 +234,5 @@ def format_alias_label(value, default_label=None):
         if description and description != alias_info.get("name", ""):
             parts.append(f"- {description}")
         return " ".join(parts)
-    
-    return default_label or value
 
+    return default_label or value

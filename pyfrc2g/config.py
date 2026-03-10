@@ -72,7 +72,7 @@ class Config:
         self.interfaces = INTERFACES
 
         # Determine output directory from firewall address (or gateway_name if set).
-        from modules.utils import extract_host_from_url, extract_base_url
+        from pyfrc2g.utils import extract_host_from_url, extract_base_url
 
         if self.gateway_name is None:
             if self.gateway_type.lower() == "pfsense":

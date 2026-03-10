@@ -1,6 +1,5 @@
-argparse>=1.4.0
+# PyFRC2G dependencies (also declared in pyproject.toml)
+# Install with: pip install -r requirements.txt  or  pip install -e .
 requests>=2.25.0
 graphviz>=0.16
 reportlab>=3.6.0
-# urllib3 is typically installed with requests, am marking as explicitly used
-urllib3>=1.26.0

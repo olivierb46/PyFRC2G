@@ -1,0 +1,7 @@
+requests>=2.25.0
+graphviz>=0.16
+reportlab>=3.6.0
+
+[dev]
+pytest>=7.0
+ruff>=0.1.0
