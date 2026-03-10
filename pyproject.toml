@@ -38,9 +38,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/PyFRC2G"
-Documentation = "https://github.com/yourusername/PyFRC2G#readme"
-Repository = "https://github.com/yourusername/PyFRC2G"
+Homepage = "https://github.com/olivierb46/PyFRC2G"
+Documentation = "https://github.com/olivierb46/PyFRC2G/blob/main/README.md"
+Repository = "https://github.com/olivierb46/PyFRC2G"
 
 [project.scripts]
 pyfrc2g = "pyfrc2g.main:main"
