@@ -18,3 +18,9 @@ output_*.csv
 # IDE
 .vscode/
 .idea/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+.pytest_cache/

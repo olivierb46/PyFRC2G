@@ -2,17 +2,18 @@
 API client module for pfSense and OPNSense.
 """
 
-import requests
-import urllib3
 import logging
 import traceback
-from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
+
+import requests
+import urllib3
+from requests.exceptions import ConnectionError, HTTPError, Timeout
+
 from pyfrc2g.utils import (
     extract_base_url,
-    update_api_maps,
-    normalize_interface,
-    is_interface_floating,
     is_floating_flag,
+    is_interface_floating,
+    update_api_maps,
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -28,6 +29,59 @@ class APIClient:
         self.address_map = {}
         self.port_map = {}
         self.alias_details = {}  # Full alias details: {alias_name: {type, content, description}}.
+        # One session for all calls: reuses the TLS connection to the firewall.
+        self.session = requests.Session()
+        self.session.verify = False
+
+    def _pfs_base(self):
+        """pfSense base URL (https://host)."""
+        if self.config.pfs_base_url != "https://<PFS_ADDRESS>":
+            return self.config.pfs_base_url
+        return extract_base_url(self.config.pfs_url)
+
+    def _opns_base(self):
+        """OPNSense base URL (https://host)."""
+        if self.config.opns_base_url != "https://<OPNS_ADDRESS>":
+            return self.config.opns_base_url
+        return extract_base_url(self.config.opns_url)
+
+    def _pfs_get(self, url, operation, params=None, timeout=10, log_level=logging.ERROR):
+        """GET on the pfSense API (X-API-Key auth)."""
+        headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
+        return self._make_api_request(url, headers=headers, params=params, timeout=timeout,
+                                      operation=operation, log_level=log_level)
+
+    def _opns_get(self, url, operation, params=None, timeout=10, log_level=logging.ERROR):
+        """GET on the OPNSense API (key/secret basic auth)."""
+        auth = (self.config.opns_key, self.config.opns_secret)
+        return self._make_api_request(url, auth=auth, params=params, timeout=timeout,
+                                      operation=operation, log_level=log_level)
+
+    def fetch_nat_rules(self):
+        """
+        Fetch port forward (destination NAT) rules.
+        pfSense: /api/v2/firewall/nat/port_forwards (pfSense REST API v2).
+        OPNSense: /api/firewall/d_nat/search_rule (recent versions only, best effort).
+
+        Returns:
+            list: NAT entries ([] if unavailable).
+        """
+        if self.config.gateway_type == "pfsense":
+            response = self._pfs_get(f"{self._pfs_base()}/api/v2/firewall/nat/port_forwards",
+                                     operation="fetching pfSense NAT port forwards",
+                                     timeout=30, log_level=logging.WARNING)
+            entries = self._get_list_from_response(response, key="data", context="NAT")
+        else:
+            response = self._opns_get(f"{self._opns_base()}/api/firewall/d_nat/search_rule",
+                                      operation="fetching OPNSense destination NAT",
+                                      timeout=30, log_level=logging.DEBUG)
+            entries = self._get_list_from_response(response, key="rows", context="NAT")
+            if response is None:
+                logging.info("OPNSense NAT API not available on this version, NAT skipped "
+                             "(use --backup to include port forwards)")
+        entries = [e for e in entries if isinstance(e, dict)]
+        logging.info(f"✓ Retrieved {len(entries)} NAT port forward(s)")
+        return entries
 
     _INVALID_INTERFACE_VALUES = frozenset({"1", "any", "(self)", "", "none", "null"})
 
@@ -91,19 +145,16 @@ class APIClient:
             logging.debug(f"Connection error details: {error}")
         elif isinstance(error, HTTPError):
             logging.log(log_level, f"HTTP error while {operation} from {url}: {error}")
-            if hasattr(error.response, 'status_code'):
+            if error.response is not None:
                 status = error.response.status_code
                 if status == 401:
-                    logging.error("Authentication failed. Check your API credentials (token/key/secret).")
+                    logging.log(log_level, "Authentication failed. Check your API credentials (token/key/secret).")
                 elif status == 403:
-                    logging.error("Access forbidden. Check API user permissions.")
+                    logging.log(log_level, "Access forbidden. Check API user permissions.")
                 elif status == 404:
-                    logging.error(f"Endpoint not found: {url}. Check API URL configuration.")
+                    logging.log(log_level, f"Endpoint not found: {url}. Check API URL configuration.")
                 elif status >= 500:
-                    logging.error(f"Server error (HTTP {status}). The firewall API may be unavailable.")
-        elif isinstance(error, requests.exceptions.JSONDecodeError):
-            logging.log(log_level, f"Invalid JSON response while {operation} from {url}: {error}")
-            logging.debug(f"Response text (first 500 chars): {getattr(error, 'response', {}).text[:500] if hasattr(error, 'response') else 'N/A'}")
+                    logging.log(log_level, f"Server error (HTTP {status}). The firewall API may be unavailable.")
         elif isinstance(error, ValueError):
             logging.log(log_level, f"Value error while {operation}: {error}")
         else:
@@ -112,7 +163,8 @@ class APIClient:
         if log_level == logging.DEBUG or logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(f"Full traceback:\n{traceback.format_exc()}")
 
-    def _make_api_request(self, url, method="GET", headers=None, auth=None, params=None, timeout=10, operation="API request"):
+    def _make_api_request(self, url, method="GET", headers=None, auth=None, params=None, timeout=10,
+                          operation="API request", log_level=logging.ERROR):
         """
         Make an API request with proper error handling.
 
@@ -128,46 +180,19 @@ class APIClient:
         Returns:
             Response object if successful, None otherwise.
         """
+        kwargs = {"timeout": timeout}
+        if headers:
+            kwargs["headers"] = headers
+        if auth:
+            kwargs["auth"] = auth
+        if params:
+            kwargs["params"] = params
         try:
-            kwargs = {
-                "verify": False,
-                "timeout": timeout
-            }
-            if headers:
-                kwargs["headers"] = headers
-            if auth:
-                kwargs["auth"] = auth
-            if params:
-                kwargs["params"] = params
-
-            response = requests.request(method, url, **kwargs)
-
-            # Check for HTTP errors (raises HTTPError for 4xx/5xx).
-            try:
-                response.raise_for_status()
-            except HTTPError:
-                # Re-raise to be caught by the outer exception handler.
-                raise
-
+            response = self.session.request(method, url, **kwargs)
+            response.raise_for_status()
             return response
-
-        except Timeout as e:
-            self._handle_api_error(operation, url, e, logging.ERROR)
-            return None
-        except ConnectionError as e:
-            self._handle_api_error(operation, url, e, logging.ERROR)
-            return None
-        except HTTPError as e:
-            self._handle_api_error(operation, url, e, logging.ERROR)
-            return None
-        except requests.exceptions.JSONDecodeError as e:
-            self._handle_api_error(operation, url, e, logging.WARNING)
-            return None
-        except RequestException as e:
-            self._handle_api_error(operation, url, e, logging.ERROR)
-            return None
-        except Exception as e:
-            self._handle_api_error(operation, url, e, logging.ERROR)
+        except Exception as e:  # RequestException and anything unexpected.
+            self._handle_api_error(operation, url, e, log_level)
             return None
 
     def fetch_aliases(self):
@@ -182,19 +207,17 @@ class APIClient:
 
     def _fetch_pfsense_aliases(self):
         """Fetch all aliases from pfSense API and populate maps."""
-        base_url = self.config.pfs_base_url if self.config.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.config.pfs_url)
+        base_url = self._pfs_base()
 
         logging.debug(f"pfSense base URL: {base_url}")
 
         # Fetch aliases.
         alias_url = f"{base_url}/api/v2/firewall/aliases"
         logging.debug(f"Fetching aliases from: {alias_url}")
-        headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-        response = self._make_api_request(
+        response = self._pfs_get(
             alias_url,
-            headers=headers,
+            operation="fetching pfSense aliases",
             timeout=10,
-            operation="fetching pfSense aliases"
         )
 
         if response:
@@ -238,12 +261,10 @@ class APIClient:
 
         # Fetch interfaces.
         iface_url = f"{base_url}/api/v2/interfaces"
-        headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-        response = self._make_api_request(
+        response = self._pfs_get(
             iface_url,
-            headers=headers,
+            operation="fetching pfSense interfaces",
             timeout=10,
-            operation="fetching pfSense interfaces"
         )
         if response:
             try:
@@ -274,18 +295,17 @@ class APIClient:
 
     def _fetch_opnsense_aliases(self):
         """Fetch all aliases from OPNSense API and populate maps."""
-        base_url = self.config.opns_base_url if self.config.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.config.opns_url)
+        base_url = self._opns_base()
 
         logging.debug(f"OPNSense base URL: {base_url}")
 
         # Fetch aliases.
         alias_url = f"{base_url}/api/firewall/alias/get"
         logging.debug(f"Fetching aliases from: {alias_url}")
-        response = self._make_api_request(
+        response = self._opns_get(
             alias_url,
-            auth=(self.config.opns_key, self.config.opns_secret),
+            operation="fetching OPNSense aliases",
             timeout=10,
-            operation="fetching OPNSense aliases"
         )
 
         if response:
@@ -373,11 +393,10 @@ class APIClient:
 
         # Fetch interfaces.
         iface_url = f"{base_url}/api/interfaces/overview/interfaces_info"
-        response = self._make_api_request(
+        response = self._opns_get(
             iface_url,
-            auth=(self.config.opns_key, self.config.opns_secret),
+            operation="fetching OPNSense interfaces",
             timeout=10,
-            operation="fetching OPNSense interfaces"
         )
 
         if response:
@@ -462,12 +481,10 @@ class APIClient:
 
         # Method 1: global rules (always try first).
         logging.debug(f"Fetching pfSense global rules from: {self.config.pfs_url}")
-        headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-        response = self._make_api_request(
+        response = self._pfs_get(
             self.config.pfs_url,
-            headers=headers,
+            operation="fetching pfSense global rules",
             timeout=30,
-            operation="fetching pfSense global rules"
         )
 
         if response:
@@ -492,14 +509,12 @@ class APIClient:
             for interface in interfaces_to_process:
                 logging.info(f"Fetching rules for interface: {interface}")
                 logging.debug(f"Fetching rules for interface {interface} from: {self.config.pfs_url}")
-                headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-                params = {"interface": interface} if hasattr(self.config, 'pfs_url') else {}
-                response = self._make_api_request(
+                params = {"interface": interface}
+                response = self._pfs_get(
                     self.config.pfs_url,
-                    headers=headers,
+                    operation=f"fetching pfSense rules for interface {interface}",
                     params=params,
                     timeout=30,
-                    operation=f"fetching pfSense rules for interface {interface}"
                 )
 
                 if response:
@@ -558,12 +573,11 @@ class APIClient:
         # 1) Fetch floating rules first.
         logging.info("Fetching rules for interface: floating")
         params_floating = {"interface": "floating", "show_all": "1"}
-        response_floating = self._make_api_request(
+        response_floating = self._opns_get(
             self.config.opns_url,
+            operation="fetching OPNSense rules for interface floating",
             params=params_floating,
-            auth=(self.config.opns_key, self.config.opns_secret),
             timeout=30,
-            operation="fetching OPNSense rules for interface floating"
         )
         if response_floating:
             try:
@@ -589,12 +603,11 @@ class APIClient:
         # 2) Fetch global rules.
         logging.debug(f"Fetching OPNSense global rules from: {self.config.opns_url}")
         params = {"show_all": "1"}
-        response = self._make_api_request(
+        response = self._opns_get(
             self.config.opns_url,
+            operation="fetching OPNSense global rules",
             params=params,
-            auth=(self.config.opns_key, self.config.opns_secret),
             timeout=30,
-            operation="fetching OPNSense global rules"
         )
 
         if response:
@@ -632,12 +645,11 @@ class APIClient:
                 logging.info(f"Fetching rules for interface: {interface}")
                 logging.debug(f"Fetching rules for interface {interface} from: {self.config.opns_url}")
                 params = {"interface": interface, "show_all": "1"}
-                response = self._make_api_request(
+                response = self._opns_get(
                     self.config.opns_url,
+                    operation=f"fetching OPNSense rules for interface {interface}",
                     params=params,
-                    auth=(self.config.opns_key, self.config.opns_secret),
                     timeout=30,
-                    operation=f"fetching OPNSense rules for interface {interface}"
                 )
 
                 if response:
@@ -684,19 +696,17 @@ class APIClient:
     def _detect_pfsense_interfaces(self):
         """Auto-detect interface list from pfSense API."""
         interfaces = set()
-        base_api_url = self.config.pfs_base_url if self.config.pfs_base_url != "https://<PFS_ADDRESS>" else extract_base_url(self.config.pfs_url)
+        base_api_url = self._pfs_base()
 
         logging.debug(f"Attempting interface detection with base URL: {base_api_url}")
 
         endpoint = "/api/v2/interfaces"
         url = f"{base_api_url}{endpoint}"
         logging.debug(f"Trying primary endpoint: {url}")
-        headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-        response = self._make_api_request(
+        response = self._pfs_get(
             url,
-            headers=headers,
+            operation="detecting pfSense interfaces (primary method)",
             timeout=10,
-            operation="detecting pfSense interfaces (primary method)"
         )
 
         if response:
@@ -722,12 +732,10 @@ class APIClient:
             endpoint = "/api/v1/firewall/interface"
             url = f"{base_api_url}{endpoint}"
             logging.debug(f"Trying fallback endpoint: {url}")
-            headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-            response = self._make_api_request(
+            response = self._pfs_get(
                 url,
-                headers=headers,
+                operation="detecting pfSense interfaces (fallback method)",
                 timeout=10,
-                operation="detecting pfSense interfaces (fallback method)"
             )
 
             if response:
@@ -745,12 +753,10 @@ class APIClient:
         if not interfaces:
             logging.debug("Attempting to extract interfaces from firewall rules...")
             logging.debug(f"Fetching rules from: {self.config.pfs_url}")
-            headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
-            response = self._make_api_request(
+            response = self._pfs_get(
                 self.config.pfs_url,
-                headers=headers,
+                operation="extracting interfaces from pfSense rules",
                 timeout=10,
-                operation="extracting interfaces from pfSense rules"
             )
 
             if response:
@@ -790,18 +796,17 @@ class APIClient:
     def _detect_opnsense_interfaces(self):
         """Auto-detect interface list from OPNSense API."""
         interfaces = set()
-        base_api_url = self.config.opns_base_url if self.config.opns_base_url != "https://<OPNS_ADDRESS>" else extract_base_url(self.config.opns_url)
+        base_api_url = self._opns_base()
 
         logging.debug(f"Attempting interface detection with base URL: {base_api_url}")
 
         endpoint = "/api/interfaces/overview/interfaces_info"
         url = f"{base_api_url}{endpoint}"
         logging.debug(f"Trying primary endpoint: {url}")
-        response = self._make_api_request(
+        response = self._opns_get(
             url,
-            auth=(self.config.opns_key, self.config.opns_secret),
+            operation="detecting OPNSense interfaces (primary method)",
             timeout=10,
-            operation="detecting OPNSense interfaces (primary method)"
         )
 
         if response:
@@ -833,12 +838,11 @@ class APIClient:
             logging.debug("Attempting to extract interfaces from firewall rules...")
             params = {"show_all": "1"}
             logging.debug(f"Fetching rules from: {self.config.opns_url}")
-            response = self._make_api_request(
+            response = self._opns_get(
                 self.config.opns_url,
+                operation="extracting interfaces from OPNSense rules",
                 params=params,
-                auth=(self.config.opns_key, self.config.opns_secret),
                 timeout=10,
-                operation="extracting interfaces from OPNSense rules"
             )
 
             if response:

@@ -2,9 +2,8 @@
 Utility functions for PyFRC2G.
 """
 
-import re
 import hashlib
-import logging
+import re
 
 # Global API alias maps (populated by APIClient).
 API_INTERFACE_MAP = {}
@@ -127,6 +126,10 @@ def map_value(value, field=None, any_value="Any"):
     if isinstance(value, list):
         value = ", ".join(map(str, value))
 
+    # Negated address ("!lan"): map the address, keep the negation marker.
+    if field in ("source", "destination") and isinstance(value, str) and value.startswith("!"):
+        return f"!{map_value(value[1:], field, any_value)}"
+
     # Interface and source mapping.
     if field in ("source", "interface"):
         val = str(value).strip().lower()
@@ -194,7 +197,7 @@ def get_alias_details(value):
     """Return alias details for a value if it is an alias, else None."""
     if not value:
         return None
-    val = str(value).lower().strip()
+    val = str(value).lower().strip().lstrip("!")
     # Direct lookup.
     if val in API_ALIAS_DETAILS:
         return API_ALIAS_DETAILS[val]
@@ -219,8 +222,9 @@ def format_alias_label(value, default_label=None):
     alias_info = get_alias_details(value)
     if alias_info:
         parts = []
-        # Add alias name.
-        parts.append(alias_info.get("name", value))
+        # Add alias name (keep the "!" negation marker if present).
+        negation = "!" if str(value).strip().startswith("!") else ""
+        parts.append(negation + alias_info.get("name", value))
         # Add type.
         alias_type = alias_info.get("type", "")
         if alias_type:

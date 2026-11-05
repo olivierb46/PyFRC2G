@@ -23,14 +23,21 @@ PyFRC2G was designed to meet two main objectives:
 * **Automatic Interface Detection**: Auto-detects all available interfaces for OPNSense
 * **API-Based Alias Mapping**: Retrieves all aliases from firewall API or from the backup XML
 * **Per-Interface Output**: Generates separate CSV and PDF files for each interface
-* **Smart Change Detection**: Only regenerates graphs when rules have changed (MD5 comparison)
+* **Several Firewalls per Run**: `FIREWALLS` list in the config (API) or several `--backup` files
+* **NAT Port Forwards**: Included in the PDF, HTML and Excel reports (`--no-nat` to skip)
+* **Change Report**: Rules added / modified / removed since the previous run (CSV, PDF, HTML, Excel), with history of previous snapshots
+* **Risk Detection (audit)**: any-to-any rules, admin/sensitive ports exposed on the WAN, shadowed or redundant rules, disabled rules, rules without description
+* **Exports**: self-contained filterable HTML report and Excel workbook, in addition to PDF/CSV
+* **Smart Change Detection**: Only regenerates outputs when rules have changed (SHA-256 fingerprint, `--force` to override)
 * **Configuration Check**: Validates `pyfrc2g/config.py` before API mode (optional bypass with `--skip-config-check`)
 * **Modular Architecture**: Clean, maintainable, and extensible codebase
 
 ### Technical Features
 
 * **Graphical Flows**: Generates visual flow diagrams using Graphviz
-* **PDF Generation**: Produces A4 PDF files with one page per interface
+* **Vector PDF**: Graphs rendered directly to PDF (sharp at any zoom, searchable text); `--raster` for the former PNG-on-A4 layout
+* **Summary Page**: First page of each PDF with metadata, fingerprints, rules per interface/action, audit and change counts
+* **Zones View**: Network-centric graph (source zone → destination zone, aggregated services), in addition to the per-rule view
 * **Color Coding**: 
   - 🟢 Green for PASS rules
   - 🔴 Red for BLOCK rules
@@ -43,7 +50,7 @@ PyFRC2G was designed to meet two main objectives:
 
 ### Python Requirements
 
-- Python 3.7 or higher
+- Python 3.8 or higher
 - Required packages (see Installation)
 
 ### System Requirements
@@ -135,9 +142,33 @@ INTERFACES = ["wan", "lan", "opt1", "opt2"]
 GATEWAY_NAME = "OPNS01"  # Display name for gateway (used in labels)
 ```
 
+#### Several firewalls
+
+To process several firewalls in one run (API mode), fill the `FIREWALLS` list. When it is
+non-empty, it replaces the single-firewall variables above:
+
+```python
+FIREWALLS = [
+    {"name": "fw-paris", "type": "pfsense", "url": "https://10.0.0.1", "token": "..."},
+    {"name": "fw-lyon", "type": "opnsense", "url": "https://10.1.0.1",
+     "key": "...", "secret": "...", "interfaces": ["lan", "opt1"]},
+]
+```
+
+Optional per-firewall key: `ciso_evidence_id` (upload to a specific CISO Assistant evidence).
+Each firewall is processed independently: a failure on one does not stop the others.
+
+#### Audit settings
+
+```python
+WAN_INTERFACES = ["wan"]          # Internet-facing interfaces (ids or descriptions)
+ADMIN_PORTS = [22, 23, 80, 443, 161, 3389, 5900, 8080, 8443, 10443]
+SENSITIVE_PORTS = [135, 139, 445, 1433, 1521, 2049, 3306, 5432, 6379, 9200, 11211, 27017]
+```
+
 ### 2. Configuration Check (API Mode)
 
-Before running in API mode, the tool checks that `PFS_BASE_URL`/`PFS_TOKEN` (pfSense) or `OPNS_BASE_URL`/`OPNS_KEY`/`OPNS_SECRET` (OPNSense) are not left as placeholders. If the config is invalid, the script exits with instructions. Use `--skip-config-check` to bypass (e.g. in scripts).
+Before running in API mode, the tool checks for each firewall that the URL and credentials (`token` for pfSense, `key`/`secret` for OPNSense) are not left as placeholders. An invalid firewall is skipped with an error (exit code 2). Use `--skip-config-check` to bypass (e.g. in scripts).
 
 ### 3. CISO Assistant Integration (Optional)
 
@@ -171,9 +202,16 @@ No manual alias mapping is required. In **backup mode**, aliases are read from t
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--api` | `-a` | Fetch rules from firewall API (default if no mode) |
-| `--backup FILE` | `-b` | Read rules from XML backup (pfSense or OPNSense config.xml) |
-| `--gateway-name NAME` | `-g` | Gateway display name (for backup or when not using API) |
+| `--backup FILE [FILE ...]` | `-b` | Read rules from one or several XML backups (pfSense or OPNSense config.xml) |
+| `--gateway-name NAME` | `-g` | Gateway display name (single firewall/backup only) |
+| `--output-dir DIR` | `-o` | Base output directory (default `results`); files go to `DIR/<gateway>/` |
+| `--force` | `-f` | Regenerate outputs even if no rule changed |
+| `--interfaces LIST` | `-i` | Only these interfaces, e.g. `lan,opt1` (floating rules are kept) |
+| `--view {all,rules,zones}` | | Graphs to include (default `all`) |
+| `--raster` | | PNG graphs on A4 pages instead of vector PDF |
+| `--no-nat` | | Do not include NAT port forwards |
 | `--skip-config-check` | | Skip configuration check before API mode |
+| `--check-deps` | | Check that required Python packages are installed |
 | `--debug` | `-d` | Enable debug logging |
 | `--verbose` | `-v` | Verbose output (same as --debug) |
 
@@ -213,6 +251,12 @@ pyfrc2g --backup config.xml --verbose
 
 # Bypass config check (e.g. in scripts)
 pyfrc2g --api --skip-config-check
+
+# Several backups, custom output directory
+pyfrc2g --backup fw1.xml fw2.xml --output-dir /srv/audit
+
+# Only LAN and OPT1, zones view only, regenerate even without change
+pyfrc2g --interfaces lan,opt1 --view zones --force
 ```
 
 #### As an Installed Package:
@@ -225,25 +269,22 @@ pyfrc2g --backup config.xml
 #### As a Python Module:
 
 ```python
-from pyfrc2g import Config, APIClient, GraphGenerator
 from pyfrc2g.main import main
 
-# Option 1: Use the main function
-main()
+# Option 1: Use the main function (same arguments as the CLI)
+main(["--backup", "config.xml", "--output-dir", "out"])
 
 # Option 2: Use components directly
+from pyfrc2g.api_client import APIClient
+from pyfrc2g.audit import audit_rules
+from pyfrc2g.config import Config
+from pyfrc2g.main import build_rule_rows
+
 config = Config()
 api_client = APIClient(config)
-graph_generator = GraphGenerator(config)
-
-# Fetch aliases
 api_client.fetch_aliases()
-
-# Fetch rules
-rules = api_client.fetch_rules()
-
-# Generate graphs
-graph_generator.generate_graphs(csv_path, output_dir)
+rows = build_rule_rows(api_client.fetch_rules(), config)
+findings = audit_rules(rows, config)
 ```
 
 ### What the Script Does
@@ -259,35 +300,52 @@ graph_generator.generate_graphs(csv_path, output_dir)
 2. No API call; gateway type and name come from the file or `--gateway-name`
 
 **Common steps**
-5. Generates a temporary CSV file with all rules
-6. Compares with previous version (MD5 checksum)
-7. If changes detected, generates graphs and PDFs (Graphviz + ReportLab)
-8. Uploads PDFs to CISO Assistant (if configured)
+5. Normalizes rules (and NAT port forwards), optionally filtered with `--interfaces`
+6. Compares with the previous run (SHA-256 fingerprint); stops here if nothing changed (unless `--force` or backup mode)
+7. Builds the change report against the previous snapshot (archived in `history/`)
+8. Runs the audit checks
+9. Generates graphs (Graphviz) and PDFs (ReportLab + pypdf), HTML report and Excel workbook
+10. Uploads the global PDF to CISO Assistant (if configured)
 
 ### Generated Files
 
-The script generates files in `results/<GATEWAY_NAME>/`:
+The script generates files in `results/<GATEWAY_NAME>/` (or `--output-dir`):
 
 #### Global Files:
-- `<GATEWAY_NAME>_FLOW_MATRIX.pdf` - PDF with all interfaces (one page per interface)
+- `<GATEWAY_NAME>_FLOW_MATRIX.pdf` - Summary, changes, audit, NAT, zones view, then one page per interface (with bookmarks)
+- `<GATEWAY_NAME>_REPORT.html` - Self-contained report with filterable tables (rules, audit, changes, NAT)
+- `<GATEWAY_NAME>_FLOW_MATRIX.xlsx` - Excel workbook (Summary, Rules, Audit, Changes, NAT sheets with filters)
+- `<GATEWAY_NAME>_ALL_flows.csv` - All rules (also the snapshot used by the next change report)
+- `<GATEWAY_NAME>_AUDIT.csv` - Audit findings
+- `<GATEWAY_NAME>_CHANGES.csv` - Changes since the previous run (from the second run on)
+- `<GATEWAY_NAME>_NAT.csv` - NAT port forwards (when present)
 
 #### Per-Interface Files:
 - `<GATEWAY_NAME>_<interface>_flows.csv` - CSV file with rules for specific interface
-- `<GATEWAY_NAME>_<interface>_FLOW_MATRIX.pdf` - PDF with graphs for specific interface
+- `<GATEWAY_NAME>_<interface>_FLOW_MATRIX.pdf` - Summary, zones view and graph for specific interface
 
 #### Tracking:
-- `md5sum.txt` - MD5 hash of last generated CSV (for change detection)
+- `fingerprint.txt` - SHA-256 of the last generated rules + NAT (change detection)
+- `history/` - Previous `_ALL_flows.csv` snapshots, timestamped
 
 ### Example Output Structure
 
 ```
 results/PFS01/
-├── PFS01_FLOW_MATRIX.pdf              # Global PDF (all interfaces)
-├── PFS01_wan_FLOW_MATRIX.pdf          # WAN interface PDF
-├── PFS01_wan_flows.csv                # WAN interface CSV
-├── PFS01_lan_FLOW_MATRIX.pdf          # LAN interface PDF
-├── PFS01_lan_flows.csv                # LAN interface CSV
-└── PFS01_opt1_FLOW_MATRIX.pdf         # OPT1 interface PDF
+├── PFS01_FLOW_MATRIX.pdf              # Global PDF
+├── PFS01_REPORT.html                  # Filterable HTML report
+├── PFS01_FLOW_MATRIX.xlsx             # Excel workbook
+├── PFS01_ALL_flows.csv                # All rules
+├── PFS01_AUDIT.csv                    # Audit findings
+├── PFS01_CHANGES.csv                  # Change report
+├── PFS01_NAT.csv                      # NAT port forwards
+├── PFS01_WAN_FLOW_MATRIX.pdf          # WAN interface PDF
+├── PFS01_WAN_flows.csv                # WAN interface CSV
+├── PFS01_LAN_FLOW_MATRIX.pdf          # LAN interface PDF
+├── PFS01_LAN_flows.csv                # LAN interface CSV
+├── fingerprint.txt
+└── history/
+    └── PFS01_ALL_flows_20261105-134003.csv
 ```
 
 ## 📊 Output Format
@@ -308,11 +366,29 @@ The temporary and per-interface CSV files use the same columns for both pfSense 
 | DISABLED   | True / False |
 | FLOATING   | True for floating rules |
 | RULE ORDER | Rule order index |
+| RULE ID    | Stable rule identifier (pfSense tracker / OPNsense uuid), used by the change report |
+
+### Audit Checks
+
+| Check | Severity | Description |
+|-------|----------|-------------|
+| ANY_ANY | CRITICAL / MEDIUM | Pass rule from any source to any destination (all ports / specific ports) |
+| WAN_EXPOSED | CRITICAL / HIGH | Pass rule from any source on a WAN interface: firewall administration ports, admin/sensitive ports, or all ports |
+| SHADOWED | MEDIUM | Rule never reached: an earlier rule on the same interface matches the same traffic with another action |
+| REDUNDANT | LOW | Rule fully covered by an earlier rule with the same action |
+| DISABLED | LOW | Disabled rule still present |
+| NO_DESCRIPTION | LOW | Rule without description |
+
+Shadowing analysis is conservative (string/port-range comparison, aliases are not expanded) and
+skips floating rules (last-match semantics by default).
 
 ### PDF Content
 
-The generated PDFs contain:
+The global PDF contains (each section is a bookmark):
 
+- **Summary page**: gateway, type, source, date, SHA-256 fingerprints, rules per interface/action, audit and change counts
+- **Changes**, **Audit findings** and **NAT port forwards** tables
+- **Zones view**: one node per source/destination, one arrow per flow (green pass, red block, dashed disabled)
 - **One page per interface** with flow diagrams
 - **One page for floating rules** when applicable
 - **Graphical flow diagrams** showing:
@@ -335,7 +411,12 @@ PyFRC2G/
 │   ├── config_checker.py      # Configuration validation (API mode)
 │   ├── api_client.py          # API client for firewalls
 │   ├── xml_parser.py          # XML backup parser (pfSense/OPNSense)
-│   ├── graph_generator.py     # Graph and PDF generation
+│   ├── graph_generator.py     # Graphviz rendering (rules and zones views)
+│   ├── reports.py             # PDF summary/tables and PDF assembly
+│   ├── exports.py             # CSV, HTML and Excel exports
+│   ├── audit.py               # Risk detection
+│   ├── diff.py                # Change report
+│   ├── nat.py                 # NAT port forward normalization
 │   ├── ciso_client.py         # CISO Assistant integration
 │   ├── utils.py               # Utility functions
 │   └── main.py                # CLI and main execution logic
@@ -343,6 +424,7 @@ PyFRC2G/
 ├── pyproject.toml             # Build and metadata (PEP 517/621)
 ├── setup.py                   # Package installation (minimal; use pyproject.toml)
 ├── requirements.txt           # Python dependencies
+├── tests/                     # pytest test suite (pip install -e ".[dev]" && pytest)
 ├── README.md                  # This file
 └── img/                       # Example images
 ```
@@ -356,9 +438,8 @@ PyFRC2G/
 - Output paths configuration
 
 #### `config_checker.py`
-- Validates `pyfrc2g/config.py` before running in API mode
-- Ensures API URL and credentials are not placeholders
-- Optional prompt to continue on warnings; `--skip-config-check` to bypass
+- Validates each firewall target before running in API mode
+- Ensures API URL and credentials are not placeholders; `--skip-config-check` to bypass
 
 #### `api_client.py`
 - `APIClient` class for firewall API interactions
@@ -372,10 +453,17 @@ PyFRC2G/
 - Extracts rules and aliases in API-compatible format
 
 #### `graph_generator.py`
-- `GraphGenerator` class for graph and PDF generation
-- CSV parsing and grouping by interface
-- Graphviz graph creation
-- PDF generation from PNG files (ReportLab)
+- `GraphGenerator` class: per-rule graphs and zones graph
+- Vector PDF rendering (PNG fallback / `--raster`)
+
+#### `reports.py` / `exports.py`
+- Summary page and tables (ReportLab), merge into one PDF with bookmarks (pypdf)
+- Filterable HTML report, Excel workbook (openpyxl), CSV files
+
+#### `audit.py` / `diff.py` / `nat.py`
+- Risk detection on normalized rules
+- Change report against the previous snapshot
+- NAT port forward normalization (API and XML)
 
 #### `utils.py`
 - Utility functions (MD5, URL extraction, filename sanitization)
@@ -386,8 +474,8 @@ PyFRC2G/
 - Main execution function (API or backup mode)
 - Configuration check for API mode
 - Orchestrates the entire workflow
-- Change detection using MD5
-- File cleanup
+- Several firewalls / backups per run
+- Change detection (SHA-256 fingerprint)
 - CISO Assistant integration
 
 #### `ciso_client.py`
@@ -511,15 +599,16 @@ brew install graphviz
 
 ### PDF Generation Fails
 
-- Ensure Graphviz is properly installed
-- Check that PNG files are generated in output directory
+- Ensure Graphviz is properly installed (`dot -V`)
+- If your Graphviz build has no PDF output, the tool falls back to PNG automatically (or use `--raster`)
 - Verify write permissions in output directory
 
 ## 📝 Notes
 
-- **Change Detection**: Package only regenerates PDFs when rules have changed (MD5 comparison)
-- **Force Regeneration**: Delete or empty `md5sum.txt` file to force regeneration
-- **Temporary Files**: CSV and PNG files are automatically cleaned up after processing
+- **Change Detection**: Package only regenerates outputs when rules or NAT have changed (SHA-256 fingerprint)
+- **Force Regeneration**: Use `--force` (or delete `fingerprint.txt`)
+- **Temporary Files**: Intermediate graph files are written to a temporary directory and removed automatically
+- **NAT on OPNsense**: Read from the XML backup; through the API only on versions exposing `/api/firewall/d_nat/search_rule` (best effort)
 - **API Aliases**: All aliases are fetched from API - no manual mapping needed
 - **Performance**: Large rule sets may take several minutes to process
 - **CISO Assistant**: PDFs are uploaded automatically after generation (if configured). Each upload creates a new revision in the evidence record, maintaining a history of firewall rule changes.
@@ -534,6 +623,15 @@ If you were using an older version:
 4. **Usage**: Run `pyfrc2g` or `pyfrc2g --api` for API; `pyfrc2g --backup config.xml` for XML backup.
 
 ## 🆕 What's New (recent)
+
+### 2.1.0
+
+- **Several firewalls per run** (`FIREWALLS`, several `--backup` files) and **NAT port forwards**
+- **Change report** with snapshot history, **audit** (risk detection)
+- **Vector PDF** with summary page and bookmarks, **zones view**
+- **HTML** (filterable) and **Excel** exports
+- New options: `--output-dir`, `--force`, `--interfaces`, `--view`, `--raster`, `--no-nat`
+- Fixes: disabled rules from XML backups, `<not/>` negation, per-interface PDF content, special characters in labels, empty results published when the API fails, CISO error messages
 
 ### Major Improvements
 
@@ -558,7 +656,6 @@ Planned improvements:
 -  **Destination VLAN display** — Show destination VLAN before de host in the graph
 -  **Rule metadata** — Retrieve timestamps and authors for rule creation/modification
 -  **Enhanced error reporting** — More detailed error messages and recovery suggestions
--  **Multiple gateway support** — Process multiple gateways in a single run
 
 ## 🤝 Contributing
 

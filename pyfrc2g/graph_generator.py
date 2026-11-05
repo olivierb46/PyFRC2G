@@ -1,17 +1,32 @@
 """
 Graph generation module for PyFRC2G.
+
+Graphs are rendered by Graphviz directly to PDF (vector, searchable text). The raster
+mode (PNG placed on an A4 page) is kept as an option and as a fallback when the local
+Graphviz build has no PDF output.
 """
 
-import os
-import glob
 import csv
+import html
 import logging
-import hashlib
+import os
+import subprocess
 import textwrap
 from collections import OrderedDict
+
 from graphviz import Digraph
-from pyfrc2g.utils import normalize_ports, safe_filename, map_value, format_alias_label
-from pyfrc2g.config import FLOATING_RULES_LABELS, UNKNOWN_LABEL, DISABLED_LABEL, ANY_VALUE
+
+from pyfrc2g.config import ANY_VALUE, DISABLED_LABEL, FLOATING_RULES_LABELS, UNKNOWN_LABEL
+from pyfrc2g.utils import format_alias_label, normalize_ports, safe_filename
+
+LABEL_WRAP_WIDTH = 40
+ZONE_EDGE_MAX_LINES = 6
+_RECORD_SPECIAL_CHARS = '\\{}|<>"'
+
+ACTION_COLORS = {"PASS": "#a3f7a3", "BLOCK": "#f7a3a3", "REJECT": "#f7a3a3"}
+EDGE_COLORS = {"PASS": "#2e7d32", "BLOCK": "#c62828", "REJECT": "#c62828"}
+DISABLED_COLOR = "#ffcc00"
+FONT = "Helvetica,Arial,sans-serif"
 
 
 def _clean_label(s, default=UNKNOWN_LABEL):
@@ -21,237 +36,222 @@ def _clean_label(s, default=UNKNOWN_LABEL):
     return str(s).replace("<", "").replace(">", "").strip() or default
 
 
-def _host_name_from_output_dir(output_dir):
-    """Return host name from output directory path (e.g. results/host/ -> host)."""
-    return os.path.basename(output_dir) if os.path.basename(output_dir) else "gateway"
+def _escape_record_text(text):
+    """Escape characters that have a special meaning in Graphviz record labels."""
+    for ch in _RECORD_SPECIAL_CHARS:
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def record_label(fields, width=LABEL_WRAP_WIDTH):
+    """
+    Build a Graphviz record label from a list of fields.
+    Each field is wrapped independently and escaped, so user data (comments, aliases)
+    containing '|', '{', '<'... cannot break the record layout.
+    """
+    rendered = []
+    for field in fields:
+        lines = textwrap.wrap(str(field), width=width) or [""]
+        rendered.append(r"\n".join(_escape_record_text(line) for line in lines))
+    return " | ".join(rendered)
+
+
+def _plain_label(lines, width=LABEL_WRAP_WIDTH):
+    """Multi-line label for non-record shapes (backslashes escaped, lines joined with \\n)."""
+    out = []
+    for line in lines:
+        out.extend(textwrap.wrap(str(line).replace("\\", "\\\\"), width=width) or [""])
+    return r"\n".join(out)
+
+
+def _interface_from_gateway(gateway):
+    """Return interface part of a 'gateway/interface' value."""
+    return gateway.split("/", 1)[1] if "/" in gateway else gateway
+
+
+def _is_true(value):
+    return (value or "").strip() in ("True", "1")
+
+
+def load_rows(csv_path):
+    """Read a rules CSV into a list of dicts."""
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
 class GraphGenerator:
     """Graph generator for firewall rules."""
 
-    def __init__(self, config):
+    def __init__(self, config, raster=False):
         self.config = config
+        self.raster = raster
 
-    def generate_by_interface(self, csv_path, output_dir):
-        """Generate separate CSV and PDF files per interface."""
-        os.makedirs(output_dir, exist_ok=True)
-        rules_by_interface = OrderedDict()
+    # ------------------------------------------------------------------ rendering
 
-        # Group rules by interface.
-        with open(csv_path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                gateway = (row.get("GATEWAY") or "").strip()
-                interface_name = gateway.split("/", 1)[1] if "/" in gateway else gateway
+    def _render(self, graph, work_dir):
+        """Render a graph to a single-page PDF in work_dir and return its path."""
+        from pyfrc2g.reports import png_to_pdf
 
-                if interface_name not in rules_by_interface:
-                    rules_by_interface[interface_name] = []
-                rules_by_interface[interface_name].append(row)
+        if not self.raster:
+            graph.format = "pdf"
+            try:
+                return graph.render(directory=work_dir, cleanup=True)
+            except subprocess.CalledProcessError as e:
+                logging.warning(f"Graphviz cannot produce PDF ({e}); falling back to PNG rendering")
+                self.raster = True
+        graph.format = "png"
+        png_path = graph.render(directory=work_dir, cleanup=True)
+        return png_to_pdf(png_path, os.path.splitext(png_path)[0] + ".pdf")
 
-        # Generate files for each interface.
-        for interface_name, rules in rules_by_interface.items():
-            if not rules:
-                continue
+    @staticmethod
+    def _new_graph(name, title):
+        g = Digraph("g", filename=f"{safe_filename(name)}.gv")
+        g.attr(fontname=FONT, rankdir="LR")
+        g.attr("node", fontname=FONT, fontsize="11")
+        g.attr("edge", fontname=FONT, fontsize="9")
+        g.attr(label=f"<<b>{html.escape(title)}</b>>", labelloc="t", fontsize="14")
+        return g
 
-            interface_safe = safe_filename(interface_name)
-            if len(interface_safe) > 80:
-                interface_safe = (
-                        interface_safe[:60]
-                        + "_"
-                        + hashlib.md5(interface_safe.encode()).hexdigest()[:8]
-                )
-            logging.info(f"Processing interface: {interface_name} ({len(rules)} rules)")
-            host_name = _host_name_from_output_dir(output_dir)
-            # Create CSV file.
-            interface_csv = os.path.join(output_dir, f"{host_name}_{interface_safe}_flows.csv")
-            with open(interface_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=self.config.csv_fieldnames)
-                writer.writeheader()
-                writer.writerows(rules)
+    # ------------------------------------------------------------------ rules view
 
-            logging.info(f"  ✓ CSV created: {interface_csv}")
-
-            # Generate graph and PDF.
-            self.generate_graphs(interface_csv, output_dir, interface_name)
-
-        logging.info(f"✓ Generated files for {len(rules_by_interface)} interfaces")
-
-    def generate_graphs(self, csv_path, output_dir, interface_filter=None):
-        """Parse CSV and generate graphs; if interface_filter is set, only for that interface."""
-        os.makedirs(output_dir, exist_ok=True)
+    def _build_flows(self, rows, interface_filter=None):
+        """Return {gateway: {source: {"nodes": ..., "edges": ...}}} from rule rows."""
         flows_by_gateway = OrderedDict()
         next_id = 0
 
-        def get_node(nodes, key, label=None, color=None, force_unique=False):
+        def get_node(nodes, key, label, color=None, force_unique=False):
             """Create or retrieve a node (by cluster/source unless force_unique)."""
             nonlocal next_id
             actual_key = f"{key}__{next_id}" if force_unique else key
             if actual_key not in nodes:
-                nodes[actual_key] = (f"node{next_id}", color, label or key)
+                nodes[actual_key] = (f"node{next_id}", color, label)
                 next_id += 1
             return nodes[actual_key][0]
 
-        def get_action_color(action):
-            """Return color for action type (pass/block/reject)."""
-            return "#a3f7a3" if action == "PASS" else "#f7a3a3" if action == "BLOCK" or action == "REJECT" else None
+        for row in rows:
+            floating = _is_true(row.get("FLOATING"))
+            gateway = "Floating-rules" if floating else (row.get("GATEWAY") or "").strip()
 
-        def get_disabled_color(disabled):
-            """Return color for disabled rules."""
-            return "#ffcc00" if disabled == "True" else None
+            if interface_filter and _interface_from_gateway(gateway) != interface_filter:
+                continue
 
-        # Parse CSV and build graph structure.
-        with open(csv_path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                floating = (row.get("FLOATING") or "").strip()
-                source = (row.get("SOURCE") or "").strip()
-                gateway = (row.get("GATEWAY") or "").strip() if floating not in ["True", "1"] else "Floating-rules"
+            source = (row.get("SOURCE") or "").strip()
+            action = (row.get("ACTION") or "").strip().upper()
+            protocol = (row.get("PROTOCOL") or "").strip() or ANY_VALUE
+            ports = normalize_ports(row.get("PORT"), ANY_VALUE)
+            destination = (row.get("DESTINATION") or "").strip()
+            comment = _clean_label(row.get("COMMENT"), default="")
+            disabled = _is_true(row.get("DISABLED"))
+            rule_number = (row.get("RULE ORDER") or "").strip()
 
-                # Filter by interface if specified.
-                if interface_filter:
-                    interface_name = gateway.split("/", 1)[1] if "/" in gateway else gateway
-                    if interface_name != interface_filter:
-                        continue
+            source_fmt = format_alias_label(source, _clean_label(source))
+            destination_fmt = format_alias_label(destination, _clean_label(destination))
+            port_fmt = format_alias_label(ports, ports)
 
-                action = (row.get("ACTION") or "").strip().upper()
-                protocol = (row.get("PROTOCOL") or "").strip() or ANY_VALUE
-                ports = normalize_ports(row.get("PORT"), ANY_VALUE)
-                destination = (row.get("DESTINATION") or "").strip()
-                comment = (row.get("COMMENT") or "").strip()
-                disabled = (row.get("DISABLED") or "").strip()
-                source_clean = _clean_label(source)
-                gateway_clean = _clean_label(gateway)
-                action_clean = _clean_label(action)
-                destination_clean = _clean_label(destination)
-                comment_clean = _clean_label(comment, default="")
-                rule_number = (row.get("RULE ORDER") or "").strip()
+            if comment:
+                destination_fields = [f"Rule #{rule_number}", destination_fmt, comment]
+            else:
+                destination_fields = [f"Rule #{rule_number}", "VLAN", destination_fmt]
+            if disabled:
+                destination_fields.append(DISABLED_LABEL)
 
-                # Format labels with alias details if available.
-                source_formatted = format_alias_label(source, source_clean)
-                destination_formatted = format_alias_label(destination, destination_clean)
-                port_formatted = format_alias_label(ports, ports)
+            sources = flows_by_gateway.setdefault(gateway, OrderedDict())
+            cluster = sources.setdefault(source, {"nodes": OrderedDict(), "edges": set()})
+            nodes = cluster["nodes"]
 
-                source_label = f"SOURCE | {source_formatted}" if source_formatted else f"SOURCE | {UNKNOWN_LABEL}"
-                gateway_label = f"GATEWAY | {gateway_clean}" if gateway_clean else f"GATEWAY | {UNKNOWN_LABEL}"
-                action_label = f"ACTION | {action_clean}" if action_clean else f"ACTION | {UNKNOWN_LABEL}"
-                proto_label = f"PROTOCOL | {protocol}"
-                port_label = f"PORT | {port_formatted}"
+            n_source = get_node(nodes, f"SOURCE|{source_fmt}", ["SOURCE", source_fmt])
+            n_gateway = get_node(nodes, f"GATEWAY|{gateway}", ["GATEWAY", _clean_label(gateway)])
+            n_action = get_node(nodes, f"ACTION|{action}", ["ACTION", _clean_label(action)],
+                                color=ACTION_COLORS.get(action))
+            proto_key = f"{protocol}|{action}"
+            n_proto = get_node(nodes, proto_key, ["PROTOCOL", protocol])
+            port_key = f"{ports}|{proto_key}"
+            n_port = get_node(nodes, port_key, ["PORT", port_fmt])
 
-                if disabled == "True":
-                    destination_label = f"Rule #{rule_number} | {destination_formatted} | {comment_clean} | {DISABLED_LABEL}" if comment_clean else f"Rule #{rule_number} | VLAN | {destination_formatted} | {DISABLED_LABEL}"
-                else:
-                    destination_label = f"Rule #{rule_number} | {destination_formatted} | {comment_clean}" if comment_clean else f"Rule #{rule_number} | VLAN | {destination_formatted}"
+            is_floating = any(label in gateway for label in FLOATING_RULES_LABELS)
+            n_destination = get_node(
+                nodes, "|".join(destination_fields), destination_fields,
+                force_unique=not is_floating,
+                color=DISABLED_COLOR if disabled else None,
+            )
 
-                # Initialize cluster/source.
-                if gateway not in flows_by_gateway:
-                    flows_by_gateway[gateway] = OrderedDict()
-                if source not in flows_by_gateway[gateway]:
-                    flows_by_gateway[gateway][source] = {"nodes": OrderedDict(), "edges": set()}
+            cluster["edges"].update([
+                (n_source, n_gateway), (n_gateway, n_action), (n_action, n_proto),
+                (n_proto, n_port), (n_port, n_destination),
+            ])
+        return flows_by_gateway
 
-                cluster = flows_by_gateway[gateway][source]
+    def render_rule_graphs(self, rows, work_dir, interface_filter=None):
+        """
+        Render one rules graph per gateway/interface.
 
-                # Create nodes.
-                n_source = get_node(cluster["nodes"], source_label)
-                n_gateway = get_node(cluster["nodes"], gateway_label)
-                n_action = get_node(cluster["nodes"], action_label, color=get_action_color(action))
-                proto_key = f"{protocol}|{action}"
-                n_proto = get_node(cluster["nodes"], proto_key, label=proto_label)
-                port_key = f"{ports}|{proto_key}"
-                n_port = get_node(cluster["nodes"], port_key, label=port_label)
-
-                is_floating = any(label in gateway for label in FLOATING_RULES_LABELS)
-                n_destination = get_node(cluster["nodes"], destination_label,
-                                        force_unique=not is_floating,
-                                        color=get_disabled_color(disabled))
-
-                # Create edges.
-                edges = [(n_source, n_gateway), (n_gateway, n_action), (n_action, n_proto),
-                        (n_proto, n_port), (n_port, n_destination)]
-                cluster["edges"].update(edges)
-
-        # Generate graphs.
-        for gateway, sources in flows_by_gateway.items():
-            gateway_safe = safe_filename(gateway)
-            filename = os.path.join(output_dir, f"{gateway_safe}.gv")
-            g = Digraph('g', filename=filename, format='png')
-            g.attr(fontname="Helvetica,Arial,sans-serif")
-            g.attr("node", fontname="Helvetica,Arial,sans-serif", fontsize="11", shape="record")
-            g.attr("edge", fontname="Helvetica,Arial,sans-serif")
-            g.attr(rankdir="LR")
-            gateway_label = _clean_label(gateway, default="Gateway")
-            g.attr(label=f"<<b>GATEWAY : {gateway_label}</b>>", labelloc="t", fontsize="14", color="#8888ff")
-
-            for source, cluster in sources.items():
-                with g.subgraph(name=f"cluster_{source.replace(' ', '_')}") as sg:
+        Returns:
+            list: (bookmark title, pdf path) for each graph.
+        """
+        os.makedirs(work_dir, exist_ok=True)
+        pages = []
+        for gateway, sources in self._build_flows(rows, interface_filter).items():
+            title = _clean_label(gateway, default="Gateway")
+            g = self._new_graph(f"rules_{gateway}", f"GATEWAY : {title}")
+            g.attr("node", shape="record")
+            g.attr(color="#8888ff")
+            for index, (source, cluster) in enumerate(sources.items()):
+                with g.subgraph(name=f"cluster_{index}") as sg:
                     sg.attr(label=f"SOURCE : {source}", style="dashed", color="#aaaaaa")
-                    for nid, color, label in cluster["nodes"].values():
-                        wrapped = r"\n".join(textwrap.wrap(label, width=40))
-                        sg.node(nid, label=wrapped, shape="record",
-                               **({"style": "filled", "fillcolor": color} if color else {}))
-                    for src, dst in cluster["edges"]:
+                    for nid, color, fields in cluster["nodes"].values():
+                        style = {"style": "filled", "fillcolor": color} if color else {}
+                        sg.node(nid, label=record_label(fields), **style)
+                    for src, dst in sorted(cluster["edges"]):
                         sg.edge(src, dst)
+            path = self._render(g, work_dir)
+            pages.append((title, path))
+            logging.info(f"✓ Graph generated: {title}")
+        return pages
 
-            g.render(view=False)
+    # ------------------------------------------------------------------ zones view
 
-            # Remove temporary .gv file.
-            try:
-                if os.path.exists(filename):
-                    os.remove(filename)
-            except Exception as e:
-                logging.warning(f"Could not delete {filename}: {e}")
+    def render_zone_graph(self, rows, work_dir, title):
+        """
+        Network-centric view: one node per source/destination, one edge per
+        (source, destination, action) aggregating protocols/ports and interfaces.
 
-            logging.info(f"✓ Graph generated: {filename}.png")
+        Returns:
+            tuple: (bookmark title, pdf path), or None if there is no rule.
+        """
+        if not rows:
+            return None
+        os.makedirs(work_dir, exist_ok=True)
+        nodes = OrderedDict()
+        edges = OrderedDict()
+        for row in rows:
+            src = (row.get("SOURCE") or ANY_VALUE).strip()
+            dst = (row.get("DESTINATION") or ANY_VALUE).strip()
+            action = (row.get("ACTION") or "").strip().upper()
+            disabled = _is_true(row.get("DISABLED"))
+            for endpoint in (src, dst):
+                nodes.setdefault(endpoint, f"z{len(nodes)}")
+            iface = "Floating" if _is_true(row.get("FLOATING")) else \
+                _interface_from_gateway((row.get("GATEWAY") or "").strip())
+            service = f"{(row.get('PROTOCOL') or ANY_VALUE).strip()} " \
+                      f"{normalize_ports(row.get('PORT'), ANY_VALUE)}"
+            edges.setdefault((src, dst, action, disabled), OrderedDict())[f"{iface}: {service}"] = None
 
-        # Generate PDF.
-        self.generate_pdf(output_dir, interface_filter)
-
-    def generate_pdf(self, output_dir, interface_filter=None):
-        """Generate PDF from PNG files in output_dir."""
-        try:
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.utils import ImageReader
-
-            host_name = _host_name_from_output_dir(output_dir)
-            interface_safe = safe_filename(interface_filter) if interface_filter else None
-            if interface_filter:
-                all_pngs = sorted(glob.glob(os.path.join(output_dir, "*.png")))
-                png_files = [png for png in all_pngs
-                             if interface_safe in os.path.basename(png).replace(".gv.png", "").replace(".png", "")]
-            else:
-                png_files = sorted(glob.glob(os.path.join(output_dir, "*.png")))
-
-            if not png_files:
-                logging.warning(f"No PNG files found for interface {interface_filter}" if interface_filter else "No PNG files found for PDF")
-                return
-
-            pdf_path = os.path.join(output_dir, f"{host_name}_{interface_safe}_FLOW_MATRIX.pdf") if interface_safe else os.path.join(output_dir, f"{host_name}_FLOW_MATRIX.pdf")
-
-            c = canvas.Canvas(pdf_path, pagesize=A4)
-            width, height = A4
-            c.setTitle(f"Flow matrix for gateway {host_name}")
-
-            for png in png_files:
-                page_title = os.path.basename(png).replace(".gv.png", "").replace(".png", "")
-                c.bookmarkPage(page_title)
-                c.addOutlineEntry(page_title, page_title, level=0)
-
-                img = ImageReader(png)
-                img_width, img_height = img.getSize()
-                scale = min(width / img_width, height / img_height)
-                new_width = img_width * scale
-                new_height = img_height * scale
-                x = (width - new_width) / 2
-                y = (height - new_height) / 2
-
-                c.drawImage(img, x, y, width=new_width, height=new_height)
-                c.showPage()
-
-            c.save()
-            if interface_filter:
-                logging.info(f"✓ PDF generated: {pdf_path} (interface: {interface_filter}, {len(png_files)} page(s))")
-            else:
-                logging.info(f"✓ Global PDF generated: {pdf_path} (all interfaces, {len(png_files)} page(s))")
-
-        except Exception as e:
-            logging.error(f"Error generating PDF: {e}")
+        g = self._new_graph("zones", title)
+        g.attr(nodesep="0.3", ranksep="1.2")
+        g.attr("node", shape="box", style="rounded,filled", fillcolor="#eef2f7", color="#7a8899")
+        for name, nid in nodes.items():
+            g.node(nid, label=_plain_label([format_alias_label(name, name)]))
+        for (src, dst, action, disabled), services in edges.items():
+            lines = list(services)
+            if len(lines) > ZONE_EDGE_MAX_LINES:
+                lines = lines[:ZONE_EDGE_MAX_LINES] + [f"+{len(services) - ZONE_EDGE_MAX_LINES} more"]
+            if disabled:
+                lines.append("(disabled)")
+            attrs = {"color": EDGE_COLORS.get(action, "#607d8b"), "fontcolor": "#37474f"}
+            if disabled:
+                attrs.update(style="dashed", color="#9e9e9e")
+            g.edge(nodes[src], nodes[dst], label=_plain_label([f"{action}"] + lines, width=60),
+                   **attrs)
+        path = self._render(g, work_dir)
+        logging.info(f"✓ Zone graph generated ({len(nodes)} zones, {len(edges)} flows)")
+        return title, path

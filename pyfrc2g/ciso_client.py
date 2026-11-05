@@ -3,12 +3,13 @@ CISO Assistant client module for PyFRC2G.
 Uploads generated PDFs to CISO Assistant as evidence revisions.
 """
 
-import os
 import logging
+import os
 import traceback
+
 import requests
 import urllib3
-from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
+from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -109,7 +110,7 @@ class CISOCClient:
             logging.error("Check that CISO Assistant is accessible and the URL is correct")
             return False
         except HTTPError as e:
-            status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'Unknown'
+            status_code = e.response.status_code if e.response is not None else 'Unknown'
             if status_code == 401:
                 logging.error("Authentication failed. Check your CISO Assistant token.")
             elif status_code == 403:
@@ -118,7 +119,7 @@ class CISOCClient:
                 logging.error(f"Evidence endpoint not found. Check the evidence ID: {self.ciso_evidence_path}")
             else:
                 logging.error(f"HTTP error {status_code} while uploading to CISO Assistant: {e}")
-            logging.debug(f"Response: {e.response.text[:500] if hasattr(e, 'response') and e.response else 'N/A'}")
+            logging.debug(f"Response: {e.response.text[:500] if e.response is not None else 'N/A'}")
             return False
         except RequestException as e:
             logging.error(f"Request error while uploading {pdf_path} to CISO Assistant: {e}")

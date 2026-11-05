@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyfrc2g"
-version = "2.0.0"
+version = "2.1.0"  # keep in sync with pyfrc2g/__init__.py
 description = "Unified Firewall Rules to Graph Converter for pfSense and OPNSense"
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,6 +29,8 @@ dependencies = [
     "requests>=2.25.0",
     "graphviz>=0.16",
     "reportlab>=3.6.0",
+    "pypdf>=3.9",
+    "openpyxl>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -55,3 +57,6 @@ target-version = "py38"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
