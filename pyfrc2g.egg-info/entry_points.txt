@@ -1,2 +1,0 @@
-[console_scripts]
-pyfrc2g = pyfrc2g.main:main
