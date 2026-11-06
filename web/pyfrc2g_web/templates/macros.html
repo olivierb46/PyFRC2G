@@ -1,0 +1,33 @@
+{% macro csrf() %}<input type="hidden" name="csrf" value="{{ csrf_token() }}">{% endmacro %}
+
+{% macro badge(value, css=None) %}{% if value %}<span class="badge {{ css or value }}">{{ value }}</span>{% endif %}{% endmacro %}
+
+{% macro level_badge(level) %}{% if level %}<span class="badge {{ level }}">{{ level }}</span>{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}
+
+{% macro data_table(id, fields, rows, row_class=None, empty="Nothing to show.") %}
+{% if rows %}
+<div class="table-tools">
+  <input type="text" id="{{ id }}-search" placeholder="Search all columns…" aria-label="Search">
+  <span class="count" id="{{ id }}-count"></span>
+</div>
+<div class="table-wrap"><table data-filter data-search="{{ id }}-search" data-count="{{ id }}-count">
+<thead><tr>{% for f in fields %}<th>{{ f }}</th>{% endfor %}</tr>
+<tr class="filters">{% for f in fields %}<th><input type="text" aria-label="Filter {{ f }}" placeholder="filter"></th>{% endfor %}</tr></thead>
+<tbody>{% for row in rows %}<tr class="{{ row_class(row) if row_class else '' }}">{% for f in fields %}<td>{{ caller(f, row[f]) if caller else row[f] }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<div class="card empty">{{ empty }}</div>{% endif %}
+{% endmacro %}
+
+{% macro runs_table(runs) %}
+{% if runs %}
+<div class="table-wrap"><table>
+<thead><tr><th>#</th><th>Status</th><th>Analysis</th><th>Firewalls</th><th>By</th><th>Started</th><th>Finished</th></tr></thead>
+<tbody>{% for r in runs %}<tr>
+<td><a href="{{ url_for('main.run', run_id=r.id) }}">#{{ r.id }}</a></td>
+<td>{{ badge(r.status) }}</td><td>{{ r.label }}</td>
+<td>{% for name in r.gateways %}<a href="{{ url_for('main.gateway', name=name) }}">{{ name }}</a>{{ ", " if not loop.last }}{% endfor %}</td>
+<td class="muted">{{ r.username or r.kind }}</td>
+<td class="muted nowrap">{{ r.started or r.queued }}</td><td class="muted nowrap">{{ r.finished or "—" }}</td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty">No analysis yet.</div>{% endif %}
+{% endmacro %}

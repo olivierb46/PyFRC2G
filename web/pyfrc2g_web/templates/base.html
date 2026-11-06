@@ -1,0 +1,60 @@
+{%- set icons = {
+  "dashboard": '<path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/>',
+  "upload": '<path d="M12 3l5 5h-3v6h-4V8H7zM5 18h14v3H5z"/>',
+  "runs": '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 5v5.4l4 2.4-.8 1.3L11 13V7z"/>',
+  "firewall": '<path d="M3 4h18v4H3zm0 6h8v4H3zm10 0h8v4h-8zM3 16h18v4H3z"/>',
+  "settings": '<path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.9a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.9a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/>',
+  "users": '<path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7 1a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3.3 3.1-6 7-6s7 2.7 7 6zm15 0c0-1.9-.7-3.6-1.9-4.9C18.6 15.3 22 16.9 22 20z"/>',
+  "ciso": '<path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5zm-1.2 13.4l6-6-1.4-1.4-4.6 4.6-2.2-2.2-1.4 1.4z"/>',
+  "events": '<path d="M5 3h11l4 4v14H5zm10 1.5V8h3.5zM8 12h9v2H8zm0 4h9v2H8z"/>',
+  "account": '<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm-9 9c0-4 4-7 9-7s9 3 9 7z"/>',
+} -%}
+{%- macro icon(name) -%}<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">{{ icons[name]|safe }}</svg>{%- endmacro -%}
+{%- macro nav(endpoint, label, name, prefix=None) -%}
+<a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.endpoint == endpoint or (prefix and (request.endpoint or '').startswith(prefix)) }}">{{ icon(name) }}{{ label }}</a>
+{%- endmacro -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{% endblock %} · PyFRC2G</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ version }}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M7 10h18M7 16h18M7 22h18' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+</head>
+<body{% block body_attrs %}{% endblock %}>
+{% if g.user %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#2f6fed"/><path d="M7 10h18M7 16h11M7 22h18" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="23" cy="16" r="2.5" fill="#fff"/></svg>PyFRC2G</div>
+    <nav class="nav">
+      {{ nav('main.dashboard', 'Dashboard', 'dashboard') }}
+      {{ nav('main.uploads', 'Configuration files', 'upload') }}
+      {{ nav('main.runs', 'Analyses', 'runs', 'main.run') }}
+      {% if g.user.role == 'admin' %}
+      <div class="nav-title">Administration</div>
+      {{ nav('admin.firewalls', 'API firewalls', 'firewall', 'admin.firewall') }}
+      {{ nav('admin.settings', 'Settings', 'settings') }}
+      {{ nav('admin.ciso', 'CISO Assistant', 'ciso') }}
+      {{ nav('admin.users', 'Users', 'users') }}
+      {{ nav('admin.events', 'Event log', 'events') }}
+      {% endif %}
+    </nav>
+    <div class="user">
+      <span class="muted small">Signed in as</span>
+      <b><a class="plain" href="{{ url_for('main.account') }}">{{ g.user.username }}</a></b>
+      <span class="badge {{ g.user.role }}">{{ g.user.role }}</span>
+      <form method="post" action="{{ url_for('main.logout') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn ghost small">Sign out</button></form>
+    </div>
+  </aside>
+  <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}
+    <div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+    {% block content %}{% endblock %}
+    <p class="muted small footer">PyFRC2G-Web {{ version }} · engine PyFRC2G {{ engine_version }} · data encrypted at rest</p>
+  </main>
+</div>
+{% else %}{% block public %}{% endblock %}{% endif %}
+<script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
+</body>
+</html>

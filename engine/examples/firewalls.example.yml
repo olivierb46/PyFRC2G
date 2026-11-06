@@ -1,0 +1,23 @@
+# PyFRC2G - example list of firewalls for API mode (same keys as FIREWALLS in pyfrc2g/config.py).
+#
+# Usage: PYFRC2G_FIREWALLS_FILE=firewalls.yml pyfrc2g   (or mount it in Docker, see docker-compose.yml)
+# Secrets stay in the environment / .env file: "${NAME}" is replaced by the variable NAME.
+#
+# Keys: name, type (pfsense / opnsense), url, token (pfSense), key + secret (OPNsense),
+#       interfaces (optional), verify_ssl / ca_bundle (optional), hits ("api" or a pfctl file),
+#       ciso_evidence_id (optional).
+
+firewalls:
+  - name: fw-paris
+    type: pfsense
+    url: https://10.0.0.1
+    token: "${FW_PARIS_TOKEN}"
+    verify_ssl: true
+
+  - name: fw-lyon
+    type: opnsense
+    url: https://10.1.0.1
+    key: "${FW_LYON_KEY}"
+    secret: "${FW_LYON_SECRET}"
+    interfaces: [lan, opt1]
+    ca_bundle: /config/internal-ca.pem

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge %}
+{% block title %}Analysis #{{ run.id }}{% endblock %}
+{% block body_attrs %}{% if active %} data-refresh="3"{% endif %}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Analysis #{{ run.id }} {{ badge(run.status) }}</h1><div class="sub">{{ run.label }}</div></div>
+<div class="actions">{% for name in run.gateways %}<a class="btn" href="{{ url_for('main.gateway', name=name) }}">Open {{ name }}</a>{% endfor %}</div></div>
+<div class="card"><dl class="kv">
+  <dt>Type</dt><dd>{{ run.kind }}</dd><dt>Started by</dt><dd>{{ run.username or "scheduler" }}</dd>
+  <dt>Queued</dt><dd>{{ run.queued }}</dd><dt>Started</dt><dd>{{ run.started or "—" }}</dd>
+  <dt>Finished</dt><dd>{{ run.finished or "—" }}</dd>{% if run.exit_code is not none %}<dt>Exit code</dt><dd>{{ run.exit_code }}</dd>{% endif %}
+</dl></div>
+<div class="section"><h2>Log</h2>
+<pre class="log">{% if run.log %}{{ run.log|join("\n") }}{% elif active %}Waiting for the analysis to start…{% else %}No output.{% endif %}</pre>
+{% if active %}<p class="muted small">This page refreshes automatically.</p>{% endif %}</div>
+{% endblock %}

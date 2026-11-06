@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge %}
+{% block title %}CISO Assistant{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>CISO Assistant</h1>
+<div class="sub">Send the PDF report of each analysis as a new revision of an evidence (compliance proof).</div></div>
+<div class="actions">{{ badge("enabled", "ok") if c.enabled else badge("disabled") }}{% if c.enabled and c.auto %} {{ badge("automatic upload", "info") }}{% endif %}</div></div>
+
+<form method="post" autocomplete="off">{{ csrf() }}
+<div class="grid cols-2">
+  <div class="card"><h2>Connection</h2>
+    <label class="check"><input type="checkbox" name="ciso_enabled" value="1" {{ 'checked' if c.enabled }}> Enable the CISO Assistant integration</label>
+    <label for="ciso_url">CISO Assistant URL</label>
+    <input type="url" id="ciso_url" name="ciso_url" value="{{ c.ciso_url }}" placeholder="https://ciso-assistant.example.com">
+    <div class="help">Base URL, without <code>/api</code>.</div>
+    <label for="ciso_token">API token</label>
+    <input type="password" id="ciso_token" name="ciso_token" autocomplete="new-password" placeholder="{{ '•••••••• (stored, leave empty to keep)' if c.has_token else 'Personal access token' }}">
+    <div class="help">CISO Assistant: Settings &gt; Personal access tokens. Stored encrypted, never displayed again.</div>
+    <label class="check mt"><input type="checkbox" name="ciso_verify_ssl" value="1" {{ 'checked' if c.verify_ssl }}> Verify the TLS certificate of CISO Assistant</label>
+    <label for="ciso_ca_pem">Internal CA certificate (PEM) <span class="muted">(optional)</span></label>
+    <textarea id="ciso_ca_pem" name="ciso_ca_pem" placeholder="{{ 'A CA certificate is stored. Paste a new one to replace it.' if c.has_ca else '-----BEGIN CERTIFICATE-----' }}"></textarea>
+    {% if c.has_ca %}<label class="check"><input type="checkbox" name="ciso_ca_clear" value="1"> Remove the stored CA certificate</label>{% endif %}
+  </div>
+  <div class="card"><h2>Evidence</h2>
+    <label for="ciso_folder_id">Folder (domain) id</label>
+    <input type="text" id="ciso_folder_id" name="ciso_folder_id" value="{{ c.ciso_folder_id }}" placeholder="UUID of the folder">
+    <label for="ciso_evidence_id">Default evidence id</label>
+    <input type="text" id="ciso_evidence_id" name="ciso_evidence_id" value="{{ c.ciso_evidence_id }}" placeholder="UUID of the evidence">
+    <div class="help">Used for every firewall without its own evidence (set on each firewall page, tab Reports &amp; files).</div>
+    <label for="ciso_observation">Revision comment</label>
+    <input type="text" id="ciso_observation" name="ciso_observation" value="{{ c.ciso_observation }}" placeholder="{{ default_note }}">
+    <div class="help">Variables: <code>{gateway}</code>, <code>{date}</code>, <code>{score}</code>, <code>{level}</code>.</div>
+    <label class="check mt"><input type="checkbox" name="ciso_auto" value="1" {{ 'checked' if c.auto }}> Send automatically after each new analysis (manual, scheduled or uploaded file)</label>
+  </div>
+</div>
+<div class="form-actions">
+  <button class="btn">Save</button>
+  <button class="btn secondary" name="test" value="1">Save and test the connection</button>
+</div>
+</form>
+
+<div class="section"><h2>Recent uploads</h2>
+{% if uploads %}<div class="table-wrap"><table><thead><tr><th>Date</th><th>Firewall</th><th>Analysis</th><th>Evidence</th><th>Result</th><th>By</th></tr></thead><tbody>
+{% for u in uploads %}<tr><td class="muted nowrap">{{ u.time }}</td><td><a href="{{ url_for('main.gateway', name=u.gateway, tab='files') }}">{{ u.gateway }}</a></td>
+<td>#{{ u.analysis_id }}</td><td class="mono">{{ u.evidence_id or "—" }}</td>
+<td>{{ badge("sent", "ok") if u.ok else badge("failed") }} <span class="small">{{ u.message }}</span></td><td class="muted">{{ u.username }}</td></tr>{% endfor %}
+</tbody></table></div>{% else %}<div class="card empty">Nothing sent yet.</div>{% endif %}</div>
+{% endblock %}

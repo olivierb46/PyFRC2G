@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge, level_badge, data_table, runs_table %}
+{% block title %}{{ gw.name }}{% endblock %}
+{% set rule_fields = ["RULE ORDER", "GATEWAY", "ACTION", "SOURCE", "DESTINATION", "PROTOCOL", "PORT", "COMMENT", "IP VERSION", "DIRECTION", "DISABLED", "AUTOMATIC"] %}
+{% set counts = {
+  "rules": data.rules|length if data else 0, "audit": data.audit|length if data else 0,
+  "changes": (data.changes|length if data.changes is not none else None) if data else None,
+  "nat": data.nat|length if data else 0, "usage": data.hits|length if data else 0} %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ gw.name }}</h1>
+    <div class="sub">{{ gw.gateway_type }} · {{ data.source if data else "" }} · analysed {{ data.generated if data else gw.updated }}
+      {% if analysis and analyses and analysis.id != analyses[0].id %}<span class="badge MEDIUM">older analysis</span>{% endif %}</div>
+  </div>
+  <div class="actions">
+    {% if g.user.role == 'admin' %}
+      {% if gw.kind == 'api' and gw.firewall_id %}<form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}
+        <input type="hidden" name="firewall_id" value="{{ gw.firewall_id }}"><input type="hidden" name="force" value="1"><button class="btn">Analyse now</button></form>{% endif %}
+      {% if data and ciso.configured %}<form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}
+        <input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn secondary" {{ 'disabled' if not ciso.evidence }} title="{{ 'Evidence ' ~ ciso.evidence if ciso.evidence else 'No evidence id' }}">Send to CISO Assistant</button></form>{% endif %}
+      {% if gw.kind == 'upload' and gw.upload_id %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=gw.upload_id) }}">{{ csrf() }}<button class="btn secondary">Analyse the file again</button></form>{% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{% if not data %}
+<div class="card empty">No analysis stored for this firewall yet.</div>
+{% else %}
+<nav class="tabs">{% for key, label in tabs %}
+  <a href="{{ url_for('main.gateway', name=gw.name, tab=key, analysis=request.args.get('analysis')) }}" class="{{ 'active' if key == tab }}">{{ label }}{% if counts.get(key) is not none and key in counts %}<span class="count">{{ counts[key] }}</span>{% endif %}</a>
+{% endfor %}</nav>
+
+{% if tab == "overview" %}
+<div class="grid cols-4">
+  <div class="card kpi"><span class="label">Risk score</span><span class="value">{{ data.risk.score if data.risk.score is not none else "—" }}</span>
+    <span>{{ level_badge(data.risk.level) }}{% if data.risk.delta is not none %} <span class="muted small">{{ "%+d"|format(data.risk.delta) }} since previous</span>{% endif %}</span></div>
+  <div class="card kpi"><span class="label">Rules</span><span class="value">{{ data.rules|length }}</span><span class="muted small">{{ data.interfaces|length }} interface(s)</span></div>
+  <div class="card kpi {{ 'bad' if data.severities.get('CRITICAL') }}"><span class="label">Findings</span><span class="value">{{ data.audit|length }}</span><span class="muted small">{{ data.severities.get('CRITICAL', 0) }} critical · {{ data.severities.get('HIGH', 0) }} high</span></div>
+  <div class="card kpi"><span class="label">Changes</span><span class="value">{{ data.changes|length if data.changes is not none else "—" }}</span><span class="muted small">{{ "since the previous analysis" if data.changes is not none else "first analysis" }}</span></div>
+</div>
+<div class="grid cols-3 section">
+  <div class="card span-2"><h3>Risk score over time</h3>{{ charts.risk_line(history) }}</div>
+  <div class="card"><h3>Actions</h3>
+    {% set totals = data.interfaces|sum_actions %}
+    {{ charts.donut([("pass", totals.pass, "pass"), ("block", totals.block, "block"), ("reject", totals.reject, "reject")], "rules") }}
+    <div class="legend"><span><span class="dot pass"></span> pass {{ totals.pass }}</span><span><span class="dot block"></span> block {{ totals.block }}</span><span><span class="dot reject"></span> reject {{ totals.reject }}</span><span><span class="dot disabled"></span> disabled {{ totals.disabled }}</span></div>
+  </div>
+</div>
+<div class="grid cols-2 section">
+  <div class="card"><h3>Findings by severity</h3>{{ charts.bars([("Critical", data.severities.get("CRITICAL", 0), "CRITICAL"), ("High", data.severities.get("HIGH", 0), "HIGH"), ("Medium", data.severities.get("MEDIUM", 0), "MEDIUM"), ("Low", data.severities.get("LOW", 0), "LOW")]) }}</div>
+  <div class="card"><h3>Risk score by interface</h3>{{ charts.bars(data.risk.by_interface|dictitems("risk")) }}</div>
+  <div class="card"><h3>Rules by interface</h3>{{ charts.bars(data.interfaces|interface_bars) }}</div>
+  <div class="card"><h3>Most severe findings</h3>
+    {% if data.audit %}<ul class="list-plain">{% for f in data.audit[:6] %}<li>{{ badge(f.SEVERITY) }} <b>{{ f.CHECK }}</b> <span class="muted">{{ f.GATEWAY }} #{{ f["RULE ORDER"] }}</span><div class="small">{{ f.DETAIL }}</div></li>{% endfor %}</ul>
+    <a href="{{ url_for('main.gateway', name=gw.name, tab='audit') }}">All findings →</a>{% else %}<p class="muted">No finding.</p>{% endif %}</div>
+</div>
+<div class="card section"><h3>Analysis</h3><dl class="kv">
+  <dt>Firewall type</dt><dd>{{ data.gateway_type }}</dd><dt>Source</dt><dd>{{ data.source }}</dd>
+  <dt>Analysed</dt><dd>{{ data.generated }} (analysis #{{ analysis.id }}, run <a href="{{ url_for('main.run', run_id=data.run_id) }}">#{{ data.run_id }}</a>)</dd>
+  <dt>Rules fingerprint</dt><dd class="mono">{{ data.fingerprint }}</dd></dl></div>
+
+{% elif tab == "rules" %}
+{{ data_table("rules", rule_fields, data.rules, row_class=rule_class) }}
+
+{% elif tab == "audit" %}
+{% call(field, value) data_table("audit", ["SEVERITY", "CHECK", "GATEWAY", "RULE ORDER", "RULE", "DETAIL"], data.audit, empty="No finding: nothing to report.") %}{% if field == "SEVERITY" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
+
+{% elif tab == "changes" %}
+{% if data.changes is none %}<div class="card empty">First analysis of this firewall: changes will be listed from the next one.</div>
+{% else %}{% call(field, value) data_table("changes", ["CHANGE", "GATEWAY", "RULE ORDER", "RULE", "DETAIL"], data.changes, empty="No rule added, modified or removed.") %}{% if field == "CHANGE" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}{% endif %}
+
+{% elif tab == "nat" %}
+{{ data_table("nat", ["TYPE", "INTERFACE", "PROTOCOL", "SOURCE", "DESTINATION", "DESTINATION PORT", "TARGET", "TARGET PORT", "COMMENT", "DISABLED"], data.nat, empty="No NAT rule.") }}
+
+{% elif tab == "matrix" %}
+{% if data.matrix %}
+<div class="table-wrap"><table class="matrix"><thead><tr><th>From \ To</th>{% for d in data.matrix.destinations %}<th>{{ d }}</th>{% endfor %}</tr></thead>
+<tbody>{% for s in data.matrix.sources %}<tr><td>{{ s }}</td>{% for d in data.matrix.destinations %}{% set cell = data.matrix.cells.get(s ~ "|" ~ d, ["", ""]) %}
+<td class="{{ 'same' if cell[0] == '-' else cell[0] }}" title="{{ cell[1] }}">{{ cell[0] }}{% if cell[0] == "PARTIAL" %}<small>{{ cell[1] }}</small>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+<p class="muted small">IPv4. ALLOWED: all traffic allowed by one rule · PARTIAL: some hosts or services only ('?' = alias or interface not fully resolved) · BLOCKED: no pass rule. Hover a cell for details.</p>
+{% else %}<div class="card empty">The zone matrix is available for pfSense, OPNsense and FortiGate.</div>{% endif %}
+
+{% elif tab == "usage" %}
+{% call(field, value) data_table("usage", ["STATUS", "GATEWAY", "RULE ORDER", "RULE", "PACKETS", "BYTES", "LAST TRAFFIC SEEN", "OBSERVED SINCE"], data.hits, empty="No hit counters for this firewall. pfSense: tick \"Read rule hit counters through the API\" in Administration > API firewalls (the API key needs the command prompt privilege). OPNsense: read from the API automatically. iptables / nftables: export with iptables-save -c or nft -j. Uploaded pfSense/OPNsense backups hold no counters.") %}{% if field == "STATUS" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
+
+{% elif tab == "graphs" %}
+{% if artifacts.graphs %}
+{% set chosen = request.args.get("graph") or artifacts.graphs[0].name %}
+<div class="graph-list">{% for item in artifacts.graphs %}<a class="btn small {{ '' if item.name == chosen else 'secondary' }}" href="{{ url_for('main.gateway', name=gw.name, tab='graphs', graph=item.name, analysis=request.args.get('analysis')) }}">{{ item.label }}</a>{% endfor %}</div>
+<div class="graph-box"><img src="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=chosen) }}" alt="Graph {{ chosen }}"></div>
+<p class="small"><a href="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=chosen) }}" target="_blank" rel="noopener">Open full size</a></p>
+{% else %}<div class="card empty">No graph stored for this analysis (Graphviz unavailable when it ran?).</div>{% endif %}
+
+{% elif tab == "files" %}
+<div class="grid cols-3">
+  {% for item in artifacts.reports %}<div class="card"><h3>{{ item.label }}</h3><p class="muted small">{{ item.name }} · {{ (item.size / 1024)|round(1) }} KB</p>
+    <div class="actions"><a class="btn small" href="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=item.name) }}" target="_blank" rel="noopener">Open</a>
+    <a class="btn small secondary" href="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=item.name, download=1) }}">Download</a></div></div>{% endfor %}
+</div>
+<div class="grid cols-2 section">
+  <div class="card"><h3>PDF per interface</h3>{% if artifacts.interfaces %}<ul class="list-plain">{% for item in artifacts.interfaces %}<li><a href="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=item.name) }}" target="_blank" rel="noopener">{{ item.label }}</a> <span class="muted small">{{ (item.size / 1024)|round(1) }} KB</span></li>{% endfor %}</ul>{% else %}<p class="muted">None.</p>{% endif %}</div>
+  <div class="card"><h3>CSV files</h3><ul class="list-plain">{% for item in artifacts.csv %}<li><a href="{{ url_for('main.artifact', name=gw.name, analysis_id=analysis.id, filename=item.name, download=1) }}">{{ item.name }}</a> <span class="muted small">{{ (item.size / 1024)|round(1) }} KB</span></li>{% endfor %}</ul></div>
+</div>
+<div class="card section"><h3>CISO Assistant</h3>
+  {% if not ciso.configured %}
+  <p class="muted">Not configured{% if g.user.role == 'admin' %}: <a href="{{ url_for('admin.ciso') }}">Administration &gt; CISO Assistant</a>{% endif %}.</p>
+  {% else %}
+  <p>The PDF report is sent as a new revision of evidence <span class="mono">{{ ciso.evidence or "—" }}</span>{% if not ciso.own and ciso.evidence %} <span class="muted">(default evidence)</span>{% endif %}{% if ciso.auto %} · <span class="badge info">automatic after each new analysis</span>{% endif %}.</p>
+  {% if g.user.role == 'admin' %}
+  <div class="actions">
+    <form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn" {{ 'disabled' if not ciso.evidence }}>Send analysis #{{ analysis.id }} now</button></form>
+    <form class="inline-row" method="post" action="{{ url_for('main.ciso_evidence', name=gw.name) }}">{{ csrf() }}
+      <input type="text" class="w-id" name="evidence_id" value="{{ ciso.own }}" placeholder="evidence id of this firewall (empty = default)" aria-label="Evidence id of this firewall">
+      <button class="btn secondary">Save evidence</button></form>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if ciso.uploads %}<ul class="list-plain mt">{% for u in ciso.uploads[:8] %}<li>{{ badge("sent", "ok") if u.ok else badge("failed") }} <span class="muted small">{{ u.time }} · analysis #{{ u.analysis_id }} · {{ u.username }}</span><div class="small">{{ u.message }}</div></li>{% endfor %}</ul>{% endif %}
+</div>
+
+{% elif tab == "history" %}
+<div class="grid cols-2">
+  <div class="card"><h3>Stored analyses</h3><ul class="list-plain">{% for a in analyses %}<li>
+    <a href="{{ url_for('main.gateway', name=gw.name, analysis=a.id) }}">#{{ a.id }} · {{ a.created }}</a> {{ level_badge(a.level) }} <span class="muted small">score {{ a.score }}</span>
+    {% if a.id == analysis.id %}<span class="badge info">shown</span>{% endif %}</li>{% endfor %}</ul></div>
+  <div class="card"><h3>Risk score over time</h3>{{ charts.risk_line(history) }}</div>
+</div>
+<div class="section"><h2>Runs</h2>{{ runs_table(runs) }}</div>
+{% if g.user.role == 'admin' %}
+<form class="section" method="post" action="{{ url_for('main.delete_gateway', name=gw.name) }}" data-confirm="Delete every stored analysis of {{ gw.name }}?">{{ csrf() }}<button class="btn danger">Delete all data of this firewall</button></form>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

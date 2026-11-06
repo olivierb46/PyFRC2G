@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block public %}
+<div class="login-wrap">
+  <form class="login-card" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#2f6fed"/><path d="M7 10h18M7 16h11M7 22h18" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="23" cy="16" r="2.5" fill="#fff"/></svg>PyFRC2G</div>
+    <p class="muted">Firewall rules, audit and compliance</p>
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+    {% if no_users %}<div class="flash info">No account yet: create an administrator with <code>pyfrc2g --create-admin NAME</code>.</div>{% endif %}
+    <label for="username">User name</label>
+    <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <div class="form-actions"><button class="btn">Sign in</button></div>
+  </form>
+</div>
+{% endblock %}

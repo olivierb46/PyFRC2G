@@ -5,3 +5,5 @@ graphviz>=0.16
 reportlab>=3.6.0
 pypdf>=3.9
 openpyxl>=3.0
+pyyaml>=5.1
+defusedxml>=0.7

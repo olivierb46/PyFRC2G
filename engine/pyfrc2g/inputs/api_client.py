@@ -2,6 +2,7 @@
 API client module for pfSense and OPNSense.
 """
 
+import json
 import logging
 import traceback
 
@@ -10,13 +11,13 @@ import urllib3
 from requests.exceptions import ConnectionError, HTTPError, Timeout
 
 from pyfrc2g.utils import (
+    add_interface_address,
     extract_base_url,
     is_floating_flag,
     is_interface_floating,
+    normalize_interface,
     update_api_maps,
 )
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class APIClient:
@@ -29,9 +30,15 @@ class APIClient:
         self.address_map = {}
         self.port_map = {}
         self.alias_details = {}  # Full alias details: {alias_name: {type, content, description}}.
+        self.interface_nets = {}  # {iface: {"nets": [...], "addrs": [...], "wan": bool}}.
+        self.firewall_interface_names = {}  # {iface id: description on the firewall}.
         # One session for all calls: reuses the TLS connection to the firewall.
         self.session = requests.Session()
-        self.session.verify = False
+        self.session.verify = getattr(config, "verify", False)
+        if self.session.verify is False:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logging.warning(f"TLS certificate verification disabled for {config.base_url or config.gateway_name} "
+                            "(use --verify-ssl / --ca-bundle, or VERIFY_SSL in the configuration)")
 
     def _pfs_base(self):
         """pfSense base URL (https://host)."""
@@ -57,31 +64,85 @@ class APIClient:
         return self._make_api_request(url, auth=auth, params=params, timeout=timeout,
                                       operation=operation, log_level=log_level)
 
+    # (NAT type, pfSense REST API v2 endpoint, OPNSense endpoint).
+    _NAT_ENDPOINTS = (
+        ("PORT FORWARD", "/api/v2/firewall/nat/port_forwards", "/api/firewall/d_nat/search_rule"),
+        ("OUTBOUND", "/api/v2/firewall/nat/outbound/mappings", "/api/firewall/source_nat/search_rule"),
+        ("1:1", "/api/v2/firewall/nat/one_to_one/mappings", "/api/firewall/one_to_one/search_rule"),
+    )
+
     def fetch_nat_rules(self):
         """
-        Fetch port forward (destination NAT) rules.
-        pfSense: /api/v2/firewall/nat/port_forwards (pfSense REST API v2).
-        OPNSense: /api/firewall/d_nat/search_rule (recent versions only, best effort).
+        Fetch NAT rules: port forwards, outbound (source NAT) and 1:1 mappings.
+        OPNSense endpoints only exist on recent versions (best effort, skipped silently).
 
         Returns:
-            list: NAT entries ([] if unavailable).
+            list: NAT entries (with a "_nat_type" key), [] if unavailable.
         """
-        if self.config.gateway_type == "pfsense":
-            response = self._pfs_get(f"{self._pfs_base()}/api/v2/firewall/nat/port_forwards",
-                                     operation="fetching pfSense NAT port forwards",
-                                     timeout=30, log_level=logging.WARNING)
-            entries = self._get_list_from_response(response, key="data", context="NAT")
-        else:
-            response = self._opns_get(f"{self._opns_base()}/api/firewall/d_nat/search_rule",
-                                      operation="fetching OPNSense destination NAT",
+        all_entries = []
+        for nat_type, pfs_path, opns_path in self._NAT_ENDPOINTS:
+            if self.config.gateway_type == "pfsense":
+                response = self._pfs_get(f"{self._pfs_base()}{pfs_path}",
+                                         operation=f"fetching pfSense NAT ({nat_type})",
+                                         timeout=30, log_level=logging.WARNING)
+                entries = self._get_list_from_response(response, key="data", context="NAT")
+            else:
+                response = self._opns_get(f"{self._opns_base()}{opns_path}",
+                                          operation=f"fetching OPNSense NAT ({nat_type})",
+                                          timeout=30, log_level=logging.DEBUG)
+                entries = self._get_list_from_response(response, key="rows", context="NAT")
+                if response is None:
+                    logging.info(f"OPNSense NAT API ({nat_type}) not available on this version, skipped "
+                                 "(use --backup to include it)")
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry["_nat_type"] = nat_type
+                    all_entries.append(entry)
+        logging.info(f"✓ Retrieved {len(all_entries)} NAT rule(s)")
+        return all_entries
+
+    def fetch_rule_counters(self, source=None):
+        """
+        Fetch rule hit counters ({rule id: {packets, bytes, states, evaluations}}).
+
+        OPNSense: /api/firewall/filter_util/rule_stats (best effort).
+        pfSense: only when source == "api", through the REST API command prompt endpoint
+        (POST /api/v2/diagnostics/command_prompt running "pfctl -vvsr"; the API user needs that
+        privilege). Otherwise give a "pfctl -vvsr" output file with --hits.
+        """
+        from pyfrc2g.analysis.hits import normalize_opnsense_stats, parse_pfctl
+
+        if self.config.gateway_type == "opnsense":
+            response = self._opns_get(f"{self._opns_base()}/api/firewall/filter_util/rule_stats",
+                                      operation="fetching OPNSense rule statistics",
                                       timeout=30, log_level=logging.DEBUG)
-            entries = self._get_list_from_response(response, key="rows", context="NAT")
             if response is None:
-                logging.info("OPNSense NAT API not available on this version, NAT skipped "
-                             "(use --backup to include port forwards)")
-        entries = [e for e in entries if isinstance(e, dict)]
-        logging.info(f"✓ Retrieved {len(entries)} NAT port forward(s)")
-        return entries
+                logging.info("OPNSense rule statistics not available (hit counters skipped)")
+                return {}
+            try:
+                counters = normalize_opnsense_stats(response.json())
+            except ValueError:
+                return {}
+        elif source == "api":
+            headers = {"accept": "application/json", "X-API-Key": self.config.pfs_token}
+            response = self._make_api_request(
+                f"{self._pfs_base()}/api/v2/diagnostics/command_prompt", method="POST",
+                headers=headers, json_body={"command": "pfctl -vvsr"}, timeout=60,
+                operation="reading pfSense rule counters", log_level=logging.WARNING)
+            try:
+                data = response.json().get("data") if response is not None else None
+            except ValueError:
+                data = None
+            output = data.get("output") if isinstance(data, dict) else None
+            if not output:
+                logging.warning("pfSense rule counters unavailable: the command prompt endpoint returned "
+                                "no 'pfctl -vvsr' output (check the API key privileges)")
+                return {}
+            counters = parse_pfctl(output)
+        else:
+            return {}
+        logging.info(f"✓ Retrieved hit counters for {len(counters)} rule(s)")
+        return counters
 
     _INVALID_INTERFACE_VALUES = frozenset({"1", "any", "(self)", "", "none", "null"})
 
@@ -164,7 +225,7 @@ class APIClient:
             logging.debug(f"Full traceback:\n{traceback.format_exc()}")
 
     def _make_api_request(self, url, method="GET", headers=None, auth=None, params=None, timeout=10,
-                          operation="API request", log_level=logging.ERROR):
+                          operation="API request", log_level=logging.ERROR, json_body=None):
         """
         Make an API request with proper error handling.
 
@@ -180,13 +241,15 @@ class APIClient:
         Returns:
             Response object if successful, None otherwise.
         """
-        kwargs = {"timeout": timeout}
+        kwargs = {"timeout": getattr(self.config, "api_timeout", None) or timeout}
         if headers:
             kwargs["headers"] = headers
         if auth:
             kwargs["auth"] = auth
         if params:
             kwargs["params"] = params
+        if json_body is not None:
+            kwargs["json"] = json_body
         try:
             response = self.session.request(method, url, **kwargs)
             response.raise_for_status()
@@ -197,13 +260,28 @@ class APIClient:
 
     def fetch_aliases(self):
         """Fetch all aliases from the configured gateway and update global maps."""
-        if self.config.gateway_type.lower() == "pfsense":
-            return self._fetch_pfsense_aliases()
-        elif self.config.gateway_type.lower() == "opnsense":
-            return self._fetch_opnsense_aliases()
+        gateway_type = self.config.gateway_type.lower()
+        if gateway_type == "pfsense":
+            result = self._fetch_pfsense_aliases()
+        elif gateway_type == "opnsense":
+            result = self._fetch_opnsense_aliases()
         else:
             logging.error(f"Unknown gateway type: {self.config.gateway_type}")
             return {}, {}, {}, {}
+        # Names given by the firewall (rules may reference an interface by its description).
+        self.firewall_interface_names = dict(self.interface_map)
+        labels = getattr(self.config, "interface_labels", None) or {}
+        unknown = sorted(set(labels) - set(self.interface_map))
+        if unknown:
+            logging.warning(f"Interface name(s) set for unknown interface(s): {unknown}")
+        labels = {k: v for k, v in labels.items() if k in self.interface_map}
+        if labels:
+            # Same dict as the global map: the new names apply to the next resolutions.
+            self.interface_map.update(labels)
+            update_api_maps(self.interface_map, self.net_map, self.address_map, self.port_map,
+                            self.alias_details, self.interface_nets)
+            logging.info(f"Interface names set by the configuration: {labels}")
+        return result
 
     def _fetch_pfsense_aliases(self):
         """Fetch all aliases from pfSense API and populate maps."""
@@ -277,6 +355,10 @@ class APIClient:
                     descr = iface.get("descr", "").strip()
                     if identifier:
                         identifier_lower = identifier.lower()
+                        add_interface_address(self.interface_nets, identifier_lower, iface.get("ipaddr"),
+                                              iface.get("subnet"), wan=identifier_lower == "wan")
+                        add_interface_address(self.interface_nets, identifier_lower,
+                                              iface.get("ipaddrv6"), iface.get("subnetv6"))
                         # Use descr if available, else identifier.upper().
                         if descr:
                             self.interface_map[identifier_lower] = descr
@@ -290,7 +372,8 @@ class APIClient:
                 logging.warning(f"Error parsing pfSense interfaces response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
 
-        update_api_maps(self.interface_map, self.net_map, self.address_map, self.port_map, self.alias_details)
+        update_api_maps(self.interface_map, self.net_map, self.address_map, self.port_map, self.alias_details,
+                        self.interface_nets)
         return self.interface_map, self.net_map, self.address_map, self.port_map
 
     def _fetch_opnsense_aliases(self):
@@ -424,6 +507,7 @@ class APIClient:
                         if (identifier and
                             identifier not in ["lo0", "enc0", "pflog0", ""] and
                             enabled):
+                            self._register_opnsense_addresses(identifier, row)
                             # Use description if available, else identifier.upper().
                             if description:
                                 self.interface_map[identifier] = description
@@ -437,18 +521,34 @@ class APIClient:
                 logging.warning(f"Error parsing OPNSense interfaces response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
 
-        update_api_maps(self.interface_map, self.net_map, self.address_map, self.port_map, self.alias_details)
+        update_api_maps(self.interface_map, self.net_map, self.address_map, self.port_map, self.alias_details,
+                        self.interface_nets)
         return self.interface_map, self.net_map, self.address_map, self.port_map
+
+    def _register_opnsense_addresses(self, identifier, row):
+        """Interface addresses from /api/interfaces/overview/interfaces_info (formats vary by version)."""
+        candidates = [row.get("addr4"), row.get("addr6")]
+        for key in ("ipv4", "ipv6"):
+            for item in row.get(key) or []:
+                if isinstance(item, dict):
+                    candidates.append(item.get("ipaddr"))
+        config = row.get("config") if isinstance(row.get("config"), dict) else {}
+        candidates.append(f"{config.get('ipaddr')}/{config.get('subnet')}"
+                          if config.get("ipaddr") and config.get("subnet") else None)
+        for address in candidates:
+            if address:
+                add_interface_address(self.interface_nets, identifier, address,
+                                      wan=identifier == "wan")
+        self.interface_nets.setdefault(identifier, {"nets": [], "addrs": [], "wan": identifier == "wan"})
 
     def fetch_rules(self):
         """Fetch firewall rules from the configured gateway and return rule entries."""
         if self.config.gateway_type.lower() == "pfsense":
             return self._fetch_pfsense_rules()
-        elif self.config.gateway_type.lower() == "opnsense":
+        if self.config.gateway_type.lower() == "opnsense":
             return self._fetch_opnsense_rules()
-        else:
-            logging.error(f"Unknown gateway type: {self.config.gateway_type}")
-            return []
+        logging.error(f"Unknown gateway type: {self.config.gateway_type}")
+        return []
 
     def _normalize_floating_rules(self, entries):
         """Set entry['floating'] from interface or API flag (shared logic with utils)."""
@@ -521,7 +621,10 @@ class APIClient:
                     try:
                         entries = self._get_list_from_response(response, key="data", context=f"rules for {interface}")
                         if entries:
-                            filtered_entries = [e for e in entries if isinstance(e, dict) and e.get("interface", "").lower() == interface.lower()]
+                            filtered_entries = [
+                                e for e in entries if isinstance(e, dict)
+                                and interface.lower() in normalize_interface(e.get("interface")).lower().split(",")
+                            ]
                             entries = filtered_entries
                         logging.info(f"  → {len(entries)} rules found for {interface}")
 
@@ -562,7 +665,7 @@ class APIClient:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")
 
         if "floating" not in [str(i).lower() for i in interfaces_to_process]:
-            interfaces_to_process = list(interfaces_to_process) + ["floating"]
+            interfaces_to_process = [*list(interfaces_to_process), "floating"]
             logging.info("Including 'floating' interface to fetch floating rules")
 
         all_entries = []
@@ -614,6 +717,9 @@ class APIClient:
             try:
                 all_rules = self._get_list_from_response(response, key="rows", context="rules")
                 logging.info(f"  → {len(all_rules)} global rules retrieved")
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    for raw in all_rules:  # Raw API rows: helps to map new OPNsense fields.
+                        logging.debug(f"Raw OPNsense rule: {json.dumps(raw, sort_keys=True, default=str)}")
                 if not all_rules:
                     logging.warning("No rules found in global response. Check API credentials and URL.")
                 for entry in all_rules:
@@ -639,9 +745,11 @@ class APIClient:
                 logging.error(f"Error parsing OPNSense rules response: {e}")
                 logging.debug(f"Response data: {response.text[:500] if hasattr(response, 'text') else 'N/A'}")
 
-        # 3) Fetch per-interface.
+        # 3) Fetch per-interface (floating rules were fetched in step 1).
         if interfaces_to_process:
             for interface in interfaces_to_process:
+                if str(interface).strip().lower() == "floating":
+                    continue
                 logging.info(f"Fetching rules for interface: {interface}")
                 logging.debug(f"Fetching rules for interface {interface} from: {self.config.opns_url}")
                 params = {"interface": interface, "show_all": "1"}
@@ -689,6 +797,9 @@ class APIClient:
         if all_entries:
             logging.info(f"✓ Total of {len(all_entries)} unique rules retrieved")
             self._normalize_floating_rules(all_entries)
+            if all(e.get("sort_order") for e in all_entries):
+                # Real evaluation order of OPNsense (floating, automatic and interface rules).
+                all_entries.sort(key=lambda e: str(e["sort_order"]))
         else:
             self._log_no_rules_error()
         return all_entries
@@ -765,7 +876,7 @@ class APIClient:
                     logging.debug(f"Found {len(rules)} rule entries")
                     for i, entry in enumerate(rules):
                         if isinstance(entry, dict):
-                            if "interface" in entry and entry["interface"]:
+                            if entry.get("interface"):
                                 iface = entry["interface"]
                                 if isinstance(iface, list):
                                     for item in iface:
@@ -795,6 +906,11 @@ class APIClient:
 
     def _detect_opnsense_interfaces(self):
         """Auto-detect interface list from OPNSense API."""
+        if self.interface_map:  # Already loaded by fetch_aliases(): no second request.
+            valid_interfaces = self._filter_valid_interfaces(set(self.interface_map))
+            if valid_interfaces:
+                logging.info(f"✓ Auto-detected interfaces: {valid_interfaces}")
+                return valid_interfaces
         interfaces = set()
         base_api_url = self._opns_base()
 
@@ -851,7 +967,7 @@ class APIClient:
                     logging.debug(f"Found {len(rows)} rule entries")
                     for i, entry in enumerate(rows):
                         if isinstance(entry, dict):
-                            if "interface" in entry and entry["interface"]:
+                            if entry.get("interface"):
                                 iface = entry["interface"]
                                 logging.debug(f"Rule {i}: interface = {iface}")
                                 interfaces.add(iface)

@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge %}
+{% block title %}{{ fw.name if fw and fw.id else "New firewall" }}{% endblock %}
+{% macro secret(name, label, help) %}
+<label for="{{ name }}">{{ label }}</label>
+<input type="password" id="{{ name }}" name="{{ name }}" autocomplete="new-password" placeholder="{{ '•••••••• (stored, leave empty to keep)' if fw and fw.has and fw.has[name] else '' }}">
+<div class="help">{{ help }}</div>
+{% endmacro %}
+{% macro choice(name, options, current) %}
+<select id="{{ name }}" name="{{ name }}">{% for value, label in options %}<option value="{{ value }}" {{ 'selected' if current == value }}>{{ label }}</option>{% endfor %}</select>
+{% endmacro %}
+{% set o = fw or {} %}
+{% set current_type = o.type or "pfsense" %}
+{% block content %}
+<div class="page-head"><div><h1>{{ fw.name if fw and fw.id else "New firewall" }}</h1>
+<div class="sub">Secrets are encrypted and never displayed again. Empty fields use the <a href="{{ url_for('admin.settings') }}">global settings</a>.</div></div>
+{% if fw and fw.id %}<div class="actions">{{ badge("enabled", "ok") if fw.enabled else badge("disabled") }}</div>{% endif %}</div>
+
+{% if test %}
+<div class="card test-result {{ 'ok' if test.ok else 'bad' }}"><h2>Connection test: {{ "OK" if test.ok else "failed" }}</h2>
+<ul class="list-plain">{% for line in test.lines %}<li>{{ line }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<form method="post" autocomplete="off">{{ csrf() }}
+
+<!-- 1. Connection -->
+<div class="card section"><h2>1. Connection</h2>
+  <div class="grid cols-2">
+    <div><label for="name">Name</label><input type="text" id="name" name="name" value="{{ o.name or '' }}" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}">
+      <div class="help">Used as the firewall name in the reports.</div></div>
+    <div><label for="fw-type">Type</label><select id="fw-type" name="type">{% for value, label in types %}<option value="{{ value }}" {{ 'selected' if current_type == value }}>{{ label }}</option>{% endfor %}</select></div>
+  </div>
+  <div class="grid cols-2">
+    <div><label for="url">API URL</label><input type="url" id="url" name="url" value="{{ o.url or '' }}" placeholder="https://10.0.0.1" required></div>
+    <div><label for="timeout">API timeout (seconds)</label><input type="number" id="timeout" name="timeout" min="5" max="600" value="{{ o.timeout or '' }}" placeholder="default (10 to 60 s per request)">
+      <div class="help">Raise it for slow or remote firewalls.</div></div>
+  </div>
+  <div data-type="pfsense" class="{{ '' if current_type == 'pfsense' else 'hidden' }}">{{ secret("token", "API key", "pfSense REST API v2 key (System > REST API > Keys).") }}</div>
+  <div data-type="opnsense" class="{{ '' if current_type == 'opnsense' else 'hidden' }}"><div class="grid cols-2"><div>{{ secret("key", "API key", "System > Access > Users > API keys.") }}</div><div>{{ secret("secret", "API secret", "") }}</div></div></div>
+  <fieldset><legend>TLS</legend>
+    <label class="check"><input type="checkbox" name="verify_ssl" value="1" {{ 'checked' if o.verify_ssl }}> Verify the certificate of the firewall</label>
+    <label for="ca_pem">Internal CA certificate (PEM) <span class="muted">(optional)</span></label>
+    <textarea id="ca_pem" name="ca_pem" placeholder="{{ 'A CA certificate is stored. Paste a new one to replace it.' if o.has_ca else '-----BEGIN CERTIFICATE-----' }}"></textarea>
+    {% if o.has_ca %}<label class="check"><input type="checkbox" name="ca_clear" value="1"> Remove the stored CA certificate</label>{% endif %}
+  </fieldset>
+  <label class="check mt"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not fw or fw.enabled }}> Enabled (scheduled analyses and "Analyse all")</label>
+</div>
+
+<!-- 2. Scope -->
+<div class="card section"><h2>2. Scope of the analysis</h2>
+  <label>Interfaces</label>
+  {% if o.detected_interfaces %}
+  <div class="checks">{% for i in o.detected_interfaces %}<label class="check"><input type="checkbox" name="interfaces_choice" value="{{ i.id }}" {{ 'checked' if i.id in o.interfaces }}> {{ i.name }} <span class="muted mono">{{ i.id }}</span></label>{% endfor %}</div>
+  <div class="help">None ticked = every interface (floating rules are always kept). Detected by the last connection test.</div>
+  <label for="interfaces">Other interfaces <span class="muted">(optional)</span></label>
+  <input type="text" id="interfaces" name="interfaces" value="{{ (o.extra_interfaces or [])|join(', ') }}" placeholder="e.g. opt5">
+  {% else %}
+  <input type="text" id="interfaces" name="interfaces" value="{{ (o.interfaces or [])|join(', ') }}" placeholder="empty = auto-detected; e.g. wan, lan, opt1">
+  <div class="help">Use “Save and test the connection” to list the interfaces of the firewall and tick them.</div>
+  {% endif %}
+  <label for="interface_labels">Interface names <span class="muted">(optional)</span></label>
+  <input type="text" id="interface_labels" name="interface_labels" value="{% for k, v in (o.interface_labels or {}).items() %}{{ k }}={{ v }}{{ ', ' if not loop.last }}{% endfor %}" placeholder="opt1=DMZ, opt2=Guests">
+  <div class="help">Replace the names read from the firewall in the reports and graphs.</div>
+  <div class="grid cols-3">
+    <div><label for="ip_version">IP version</label>{{ choice("ip_version", [("", "IPv4 and IPv6"), ("4", "IPv4 only"), ("6", "IPv6 only")], o.ip_version or "") }}</div>
+    <div data-type="opnsense"><label for="automatic_rules">Rules generated by the firewall</label>{{ choice("automatic_rules", [("default", "Global setting (" ~ ("included" if settings.automatic_rules else "hidden") ~ ")"), ("include", "Included"), ("exclude", "Hidden (as in a backup)")], o.automatic_rules or "default") }}
+      <div class="help">OPNsense automatic rules (default deny, anti-lockout, DHCP, bogons...): returned by the API, absent from the backup file.</div></div>
+    <div><label>&nbsp;</label>
+      <label class="check"><input type="checkbox" name="nat" value="1" {{ 'checked' if not fw or o.nat }}> Analyse the NAT rules</label>
+      <label class="check"><input type="checkbox" name="hits" value="1" {{ 'checked' if (o.hits if fw else current_type == 'opnsense') }}> Read the rule hit counters</label>
+      <div class="help" data-type="pfsense">pfSense: <code>--hits api</code>, runs <code>pfctl -vvsr</code> through the command prompt endpoint (the key needs that privilege).</div>
+      <div class="help" data-type="opnsense">OPNsense: rule statistics of the API.</div></div>
+  </div>
+</div>
+
+<!-- 3. Audit -->
+<div class="card section"><h2>3. Audit</h2>
+  <div class="grid cols-2">
+    <div><label for="wan_interfaces">Internet-facing interfaces</label>
+      <input type="text" id="wan_interfaces" name="wan_interfaces" value="{{ (o.wan_interfaces or [])|join(', ') }}" placeholder="global: {{ settings.wan_interfaces|join(', ') }}">
+      <div class="help">Interface ids or names exposed to the Internet on this firewall (e.g. wan, opt1, igc0).</div></div>
+    <div><label for="unused_days">Report rules without traffic for (days)</label>
+      <input type="number" id="unused_days" name="unused_days" min="1" max="3650" value="{{ o.unused_days or '' }}" placeholder="global: {{ settings.unused_days }}"></div>
+    <div><label for="admin_ports">Administration ports</label>
+      <input type="text" id="admin_ports" name="admin_ports" value="{{ (o.admin_ports or [])|join(', ') }}" placeholder="global: {{ settings.admin_ports|join(', ') }}"></div>
+    <div><label for="sensitive_ports">Sensitive ports</label>
+      <input type="text" id="sensitive_ports" name="sensitive_ports" value="{{ (o.sensitive_ports or [])|join(', ') }}" placeholder="global: {{ settings.sensitive_ports|join(', ') }}"></div>
+  </div>
+  <label for="policy_mode">Compliance policy</label>
+  {{ choice("policy_mode", [("global", "Global policy" ~ (" (none defined)" if not settings.policy.strip() else "")), ("own", "Policy of this firewall"), ("none", "No policy")], o.policy_mode or "global") }}
+  <div data-when="policy_mode:own"><textarea class="tall" id="policy" name="policy" spellcheck="false" placeholder="policies:&#10;  - id: no-rdp-from-wan&#10;    severity: CRITICAL&#10;    match: {interface: wan, action: pass, port: 3389}">{{ o.policy or '' }}</textarea>
+    <div class="help"><a href="{{ url_for('admin.policy_example') }}" target="_blank" rel="noopener">Commented example</a>.</div></div>
+</div>
+
+<!-- 4. Schedule -->
+<div class="card section"><h2>4. Schedule and history</h2>
+  <div class="grid cols-3">
+    <div><label for="schedule_mode">Automatic analysis</label>
+      {{ choice("schedule_mode", [("global", "Global schedule (" ~ (settings.schedule or "disabled") ~ ")"), ("custom", "Own interval"), ("manual", "Manual only")], o.schedule_mode or "global") }}</div>
+    <div data-when="schedule_mode:custom"><label for="schedule">Every</label>
+      <input type="text" id="schedule" name="schedule" value="{{ o.schedule or '' }}" placeholder="30m, 6h, 1d"></div>
+    <div><label for="retention">Analyses kept</label>
+      <input type="number" id="retention" name="retention" min="1" max="500" value="{{ o.retention or '' }}" placeholder="global: {{ settings.retention }}"></div>
+  </div>
+</div>
+
+<!-- 5. Reports -->
+<div class="card section"><h2>5. Reports and CISO Assistant</h2>
+  <div class="grid cols-2">
+    <div><label for="view">Graphs in the PDF report</label>
+      {{ choice("view", [("all", "Rules and zones"), ("rules", "Rules (flows per rule)"), ("zones", "Zones (network view)")], o.view or "all") }}
+      <label class="check mt"><input type="checkbox" name="raster" value="1" {{ 'checked' if o.raster }}> PNG graphs on A4 pages (lighter PDF for very large rule sets)</label>
+      <label class="check"><input type="checkbox" name="excel" value="1" {{ 'checked' if not fw or o.excel }}> Excel workbook</label>
+      <label class="check"><input type="checkbox" name="svg" value="1" {{ 'checked' if not fw or o.svg }}> Interactive graphs in the application (Graphs tab)</label>
+      <div class="help">The interactive HTML report, the PDF and the CSV files are always produced.</div></div>
+    <div><label for="ciso_evidence_id">CISO Assistant evidence id</label>
+      <input type="text" id="ciso_evidence_id" name="ciso_evidence_id" value="{{ o.ciso_evidence_id or '' }}" placeholder="{{ 'default: ' ~ settings.ciso_evidence_id if settings.ciso_evidence_id else 'UUID of the evidence' }}">
+      <label for="ciso_auto">Send the PDF after each new analysis</label>
+      {{ choice("ciso_auto", [("default", "Global setting (" ~ ("yes" if settings.ciso_auto else "no") ~ ")"), ("always", "Yes"), ("never", "No")], o.ciso_auto or "default") }}
+      {% if not settings.ciso_enabled %}<div class="help">CISO Assistant is not enabled: <a href="{{ url_for('admin.ciso') }}">Administration &gt; CISO Assistant</a>.</div>{% endif %}</div>
+  </div>
+</div>
+
+<!-- 6. Organisation -->
+<div class="card section"><h2>6. Organisation</h2>
+  <div class="grid cols-3">
+    <div><label for="site">Site</label><input type="text" id="site" name="site" maxlength="64" value="{{ o.site or '' }}" placeholder="e.g. Paris"></div>
+    <div><label for="owner">Owner</label><input type="text" id="owner" name="owner" maxlength="64" value="{{ o.owner or '' }}" placeholder="team or person in charge"></div>
+    <div><label for="tags">Tags</label><input type="text" id="tags" name="tags" value="{{ (o.tags or [])|join(', ') }}" placeholder="prod, dmz"></div>
+  </div>
+  <label for="description">Description</label><input type="text" id="description" name="description" maxlength="200" value="{{ o.description or '' }}">
+  <div class="help">Shown on the dashboard (filters by site and tag) and in the reports.</div>
+</div>
+
+<div class="form-actions">
+  <button class="btn" name="analyse" value="1">Save and analyse now</button>
+  <button class="btn secondary" name="test" value="1">Save and test the connection</button>
+  <button class="btn secondary">Save</button>
+  <a class="btn secondary" href="{{ url_for('admin.firewalls') }}">Cancel</a>
+</div>
+</form>
+{% if fw and fw.id %}
+<form class="section" method="post" action="{{ url_for('admin.delete_firewall', firewall_id=fw.id) }}" data-confirm="Delete the firewall {{ fw.name }}? Its stored analyses are kept.">{{ csrf() }}<button class="btn danger">Delete this firewall</button></form>
+{% endif %}
+{% endblock %}

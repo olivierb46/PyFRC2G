@@ -2,7 +2,6 @@
 Utility functions for PyFRC2G.
 """
 
-import hashlib
 import re
 
 # Global API alias maps (populated by APIClient).
@@ -11,15 +10,10 @@ API_NET_MAP = {}
 API_ADDRESS_MAP = {}
 API_PORT_MAP = {}
 API_ALIAS_DETAILS = {}  # Full alias details: {name: {type, content, description}}.
-
-
-def calculate_md5(file_path):
-    """Return MD5 hash of a file."""
-    md5 = hashlib.md5()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            md5.update(chunk)
-    return md5.hexdigest()
+# Interface addressing: {iface_id: {"nets": ["192.168.1.0/24"], "addrs": ["192.168.1.1"], "wan": bool}}.
+API_INTERFACE_NETS = {}
+# Incremented by update_api_maps(): invalidates the caches of netmodel.
+MAPS_VERSION = 0
 
 
 def extract_base_url(api_url):
@@ -33,7 +27,8 @@ def normalize_ports(port_field, any_value="Any"):
     """Return normalized port field value."""
     if not port_field:
         return any_value
-    return re.sub(r'\s+', '', str(port_field).strip()) or any_value
+    # "80 443" / "80, 443" -> "80,443" (spaces separate ports in pfSense aliases).
+    return re.sub(r"\s*,\s*|\s+", ",", str(port_field).strip()) or any_value
 
 
 def safe_filename(name):
@@ -51,7 +46,7 @@ def normalize_interface(entry_interface):
 
 
 # Floating: API/backup use same semantics (tag "yes"/"1"/"true" or flag True/1).
-FLOATING_FLAG_VALUES = frozenset({True, 1, "1", "yes", "true"})
+FLOATING_FLAG_VALUES = frozenset({True, "1", "yes", "true"})  # 1 == True
 
 
 def is_interface_floating(raw_interface):
@@ -64,7 +59,7 @@ def is_interface_floating(raw_interface):
     if isinstance(raw_interface, (int, float)) and raw_interface == 0:
         return True
     iface = normalize_interface(raw_interface).lower()
-    if not iface or iface == "floating" or iface == "0":
+    if not iface or iface in ("floating", "0"):
         return True
     return "," in iface
 
@@ -182,15 +177,72 @@ def map_value(value, field=None, any_value="Any"):
     return value
 
 
-def update_api_maps(interface_map, net_map, address_map, port_map, alias_details=None):
-    """Update global API alias maps with the given data."""
+def update_api_maps(interface_map, net_map, address_map, port_map, alias_details=None,
+                    interface_nets=None):
+    """Update global API alias maps with the given data (interface_nets is reset when omitted)."""
     global API_INTERFACE_MAP, API_NET_MAP, API_ADDRESS_MAP, API_PORT_MAP, API_ALIAS_DETAILS
+    global API_INTERFACE_NETS, MAPS_VERSION
+    MAPS_VERSION += 1
     API_INTERFACE_MAP = interface_map
     API_NET_MAP = net_map
     API_ADDRESS_MAP = address_map
     API_PORT_MAP = port_map
     if alias_details is not None:
         API_ALIAS_DETAILS = alias_details
+    API_INTERFACE_NETS = interface_nets or {}
+
+
+def empty_maps():
+    """Lookup maps filled by the parsers / API client and installed with update_api_maps()."""
+    return {"interface_map": {}, "net_map": {}, "address_map": {}, "port_map": {},
+            "alias_details": {}, "interface_nets": {}}
+
+
+def register_alias(maps, name, alias_type, content, description="", display=None):
+    """
+    Store one alias / object in the lookup maps.
+
+    display: text shown in the reports instead of the alias name (default: description or
+    content for addresses, content for ports).
+    """
+    key = str(name).lower()
+    maps["alias_details"][key] = {"name": str(name), "type": alias_type, "content": content,
+                                  "description": description}
+    if alias_type == "port":
+        maps["port_map"][key] = display or content or description
+        return
+    shown = display or description or content
+    maps["net_map"][key] = shown
+    if alias_type in ("host", "network"):
+        maps["address_map"][key] = shown
+
+
+def add_interface_address(nets, iface, address, prefix=None, wan=None):
+    """
+    Record an interface address in an interface_nets dict.
+    address may be "192.168.1.1", "192.168.1.1/24" or a non-static value ("dhcp", "pppoe"...),
+    which only registers the interface. prefix is the subnet length when address has none.
+    """
+    import ipaddress
+
+    entry = nets.setdefault(str(iface).lower(), {"nets": [], "addrs": [], "wan": False})
+    if wan is not None:
+        entry["wan"] = entry["wan"] or bool(wan)
+    text = str(address or "").strip()
+    if not text:
+        return entry
+    if "/" not in text and prefix not in (None, ""):
+        text = f"{text}/{prefix}"
+    try:
+        iface_obj = ipaddress.ip_interface(text)
+    except ValueError:
+        return entry  # dhcp, pppoe, track6...
+    if str(iface_obj.ip) not in entry["addrs"]:
+        entry["addrs"].append(str(iface_obj.ip))
+    has_net = iface_obj.network.prefixlen != iface_obj.network.max_prefixlen or "/" in text
+    if has_net and str(iface_obj.network) not in entry["nets"]:
+        entry["nets"].append(str(iface_obj.network))
+    return entry
 
 
 def get_alias_details(value):

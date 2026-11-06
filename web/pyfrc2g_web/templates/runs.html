@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% from "macros.html" import runs_table %}
+{% block title %}Analyses{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Analyses</h1><div class="sub">Every analysis run, manual, scheduled or from an uploaded file.</div></div></div>
+{{ runs_table(runs) }}
+{% endblock %}

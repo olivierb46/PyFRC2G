@@ -4,38 +4,38 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyfrc2g"
-version = "2.1.0"  # keep in sync with pyfrc2g/__init__.py
-description = "Unified Firewall Rules to Graph Converter for pfSense and OPNSense"
+version = "2.2.0"  # keep in sync with pyfrc2g/__init__.py
+description = "Firewall rules to flow graphs, audit and compliance reports (pfSense, OPNsense, FortiGate, iptables, nftables, Stormshield)"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
     { name = "PyFRC2G Contributors" }
 ]
-keywords = ["firewall", "pfsense", "opnsense", "graph", "flow", "compliance"]
+keywords = ["firewall", "pfsense", "opnsense", "fortigate", "iptables", "nftables", "stormshield", "graph", "flow", "audit", "compliance"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: System Administrators",
     "Topic :: System :: Networking :: Firewalls",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "requests>=2.25.0",
     "graphviz>=0.16",
     "reportlab>=3.6.0",
     "pypdf>=3.9",
     "openpyxl>=3.0",
+    "pyyaml>=5.1",
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
     "ruff>=0.1.0",
 ]
 
@@ -53,10 +53,7 @@ include = ["pyfrc2g*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

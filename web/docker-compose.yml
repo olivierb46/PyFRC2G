@@ -1,0 +1,25 @@
+# PyFRC2G-Web - the code is mounted from this repository (read-only volumes): ./pyfrc2g_web
+# for the web application and ../engine/pyfrc2g for the engine.
+
+services:
+  pyfrc2g-web:
+    build: .
+    image: pyfrc2g-web:runtime
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file: .env
+    # Hardening: read-only root filesystem, no privileges (writes go to the volume and /tmp).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - pyfrc2g-data:/data
+      - ./pyfrc2g_web:/app/pyfrc2g-web/pyfrc2g_web:ro,z
+      - ../engine/pyfrc2g:/app/pyfrc2g/pyfrc2g:ro,z
+
+volumes:
+  pyfrc2g-data:

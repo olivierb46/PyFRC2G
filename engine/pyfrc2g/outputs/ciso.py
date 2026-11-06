@@ -11,8 +11,6 @@ import requests
 import urllib3
 from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 class CISOCClient:
     """Client for uploading evidence to CISO Assistant."""
@@ -30,6 +28,12 @@ class CISOCClient:
         self.ciso_evidence_path = getattr(config, 'ciso_evidence_path', None)
         self.ciso_folder_id = getattr(config, 'ciso_folder_id', None)
         self.ciso_evidence_id = getattr(config, 'ciso_evidence_id', None)
+        # CISO Assistant has its own certificate: global TLS settings, not the firewall ones.
+        from pyfrc2g.config import tls_verify
+
+        self.verify = tls_verify()
+        if self.verify is False:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         # Check if CISO Assistant is configured.
         self.enabled = (
@@ -92,7 +96,7 @@ class CISOCClient:
                     files=files,
                     data=data,
                     headers=headers,
-                    verify=False,
+                    verify=self.verify,
                     timeout=60
                 )
 

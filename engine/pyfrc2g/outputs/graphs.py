@@ -6,7 +6,6 @@ mode (PNG placed on an A4 page) is kept as an option and as a fallback when the 
 Graphviz build has no PDF output.
 """
 
-import csv
 import html
 import logging
 import os
@@ -17,6 +16,7 @@ from collections import OrderedDict
 from graphviz import Digraph
 
 from pyfrc2g.config import ANY_VALUE, DISABLED_LABEL, FLOATING_RULES_LABELS, UNKNOWN_LABEL
+from pyfrc2g.model.rules import interface_part, is_true
 from pyfrc2g.utils import format_alias_label, normalize_ports, safe_filename
 
 LABEL_WRAP_WIDTH = 40
@@ -64,34 +64,24 @@ def _plain_label(lines, width=LABEL_WRAP_WIDTH):
     return r"\n".join(out)
 
 
-def _interface_from_gateway(gateway):
-    """Return interface part of a 'gateway/interface' value."""
-    return gateway.split("/", 1)[1] if "/" in gateway else gateway
-
-
-def _is_true(value):
-    return (value or "").strip() in ("True", "1")
-
-
-def load_rows(csv_path):
-    """Read a rules CSV into a list of dicts."""
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
 class GraphGenerator:
     """Graph generator for firewall rules."""
 
-    def __init__(self, config, raster=False):
+    def __init__(self, config, raster=False, svg=False):
+        """raster: PNG pages instead of vector PDF; svg: SVG files (web application)."""
         self.config = config
         self.raster = raster
+        self.svg = svg
 
     # ------------------------------------------------------------------ rendering
 
     def _render(self, graph, work_dir):
-        """Render a graph to a single-page PDF in work_dir and return its path."""
-        from pyfrc2g.reports import png_to_pdf
+        """Render a graph to a single-page PDF (or an SVG file) in work_dir and return its path."""
+        from pyfrc2g.outputs.pdf import png_to_pdf
 
+        if self.svg:
+            graph.format = "svg"
+            return graph.render(directory=work_dir, cleanup=True)
         if not self.raster:
             graph.format = "pdf"
             try:
@@ -129,10 +119,10 @@ class GraphGenerator:
             return nodes[actual_key][0]
 
         for row in rows:
-            floating = _is_true(row.get("FLOATING"))
+            floating = is_true(row.get("FLOATING"))
             gateway = "Floating-rules" if floating else (row.get("GATEWAY") or "").strip()
 
-            if interface_filter and _interface_from_gateway(gateway) != interface_filter:
+            if interface_filter and interface_part(gateway) != interface_filter:
                 continue
 
             source = (row.get("SOURCE") or "").strip()
@@ -141,7 +131,7 @@ class GraphGenerator:
             ports = normalize_ports(row.get("PORT"), ANY_VALUE)
             destination = (row.get("DESTINATION") or "").strip()
             comment = _clean_label(row.get("COMMENT"), default="")
-            disabled = _is_true(row.get("DISABLED"))
+            disabled = is_true(row.get("DISABLED"))
             rule_number = (row.get("RULE ORDER") or "").strip()
 
             source_fmt = format_alias_label(source, _clean_label(source))
@@ -227,11 +217,11 @@ class GraphGenerator:
             src = (row.get("SOURCE") or ANY_VALUE).strip()
             dst = (row.get("DESTINATION") or ANY_VALUE).strip()
             action = (row.get("ACTION") or "").strip().upper()
-            disabled = _is_true(row.get("DISABLED"))
+            disabled = is_true(row.get("DISABLED"))
             for endpoint in (src, dst):
                 nodes.setdefault(endpoint, f"z{len(nodes)}")
-            iface = "Floating" if _is_true(row.get("FLOATING")) else \
-                _interface_from_gateway((row.get("GATEWAY") or "").strip())
+            iface = "Floating" if is_true(row.get("FLOATING")) else \
+                interface_part((row.get("GATEWAY") or "").strip())
             service = f"{(row.get('PROTOCOL') or ANY_VALUE).strip()} " \
                       f"{normalize_ports(row.get('PORT'), ANY_VALUE)}"
             edges.setdefault((src, dst, action, disabled), OrderedDict())[f"{iface}: {service}"] = None
@@ -244,13 +234,13 @@ class GraphGenerator:
         for (src, dst, action, disabled), services in edges.items():
             lines = list(services)
             if len(lines) > ZONE_EDGE_MAX_LINES:
-                lines = lines[:ZONE_EDGE_MAX_LINES] + [f"+{len(services) - ZONE_EDGE_MAX_LINES} more"]
+                lines = [*lines[:ZONE_EDGE_MAX_LINES], f"+{len(services) - ZONE_EDGE_MAX_LINES} more"]
             if disabled:
                 lines.append("(disabled)")
             attrs = {"color": EDGE_COLORS.get(action, "#607d8b"), "fontcolor": "#37474f"}
             if disabled:
                 attrs.update(style="dashed", color="#9e9e9e")
-            g.edge(nodes[src], nodes[dst], label=_plain_label([f"{action}"] + lines, width=60),
+            g.edge(nodes[src], nodes[dst], label=_plain_label([f"{action}", *lines], width=60),
                    **attrs)
         path = self._render(g, work_dir)
         logging.info(f"✓ Zone graph generated ({len(nodes)} zones, {len(edges)} flows)")

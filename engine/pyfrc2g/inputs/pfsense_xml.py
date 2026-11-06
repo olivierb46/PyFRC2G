@@ -4,10 +4,20 @@ Extracts rules and aliases in API-compatible format from config.xml backups.
 """
 
 import logging
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # Element type only: parsing goes through defusedxml.
 from pathlib import Path
 
-from pyfrc2g.utils import is_floating_flag, is_interface_floating
+# Backups can come from untrusted sources (web uploads): defusedxml refuses entity expansion,
+# external entities and DTD tricks.
+from defusedxml.ElementTree import ParseError, parse
+
+from pyfrc2g.utils import (
+    add_interface_address,
+    empty_maps,
+    is_floating_flag,
+    is_interface_floating,
+    register_alias,
+)
 
 _SYSTEM_INTERFACES = frozenset({"lo0", "enc0", "pflog0"})
 _FALSE_FLAG_VALUES = frozenset({"0", "no", "false", "off"})
@@ -26,20 +36,6 @@ def _detect_type_from_root(root):
         return "pfsense"
     logging.warning(f"Could not detect backup type from root tag: {root_tag}")
     return None
-
-
-def detect_backup_type(xml_path):
-    """
-    Detect whether the XML backup is from pfSense or OPNSense.
-
-    Returns:
-        str: 'pfsense', 'opnsense', or None if unknown.
-    """
-    try:
-        return _detect_type_from_root(ET.parse(xml_path).getroot())
-    except ET.ParseError as e:
-        logging.error(f"Invalid XML file: {e}")
-        return None
 
 
 def _get_text(element, default=""):
@@ -74,20 +70,6 @@ def _get_hostname(root):
     return _get_child_text(root.find("system"), "hostname", "") or None
 
 
-def get_gateway_name_from_xml(xml_path):
-    """
-    Extract gateway name from backup XML (system hostname).
-    Both pfSense and OPNSense use <system><hostname>...</hostname>.
-
-    Returns:
-        str or None: Hostname if found, None on error or if not found.
-    """
-    try:
-        return _get_hostname(ET.parse(xml_path).getroot())
-    except (ET.ParseError, OSError):
-        return None
-
-
 def _extract_address(source_or_dest):
     """
     Extract address from source or destination XML element.
@@ -112,33 +94,6 @@ def _extract_port(dest_elem):
     return _get_child_text(dest_elem, "port") or None
 
 
-def _empty_maps():
-    return {
-        "interface_map": {},
-        "net_map": {},
-        "address_map": {},
-        "port_map": {},
-        "alias_details": {},
-    }
-
-
-def _register_alias(maps, name, alias_type, content, description):
-    """Store one alias in the lookup maps (shared by pfSense and OPNSense parsers)."""
-    key = name.lower()
-    maps["alias_details"][key] = {
-        "name": name,
-        "type": alias_type,
-        "content": content,
-        "description": description,
-    }
-    if alias_type in ("host", "network"):
-        maps["net_map"][key] = maps["address_map"][key] = description or content
-    elif alias_type == "port":
-        maps["port_map"][key] = content or description
-    else:
-        maps["net_map"][key] = description or content
-
-
 def _register_interfaces(root, maps, require_enabled=False):
     """Fill interface_map from <interfaces>: wan, lan and optN → description."""
     for iface in root.findall("interfaces/*"):
@@ -150,6 +105,19 @@ def _register_interfaces(root, maps, require_enabled=False):
         if require_enabled and _get_child_text(iface, "enable", "1") != "1":
             continue
         maps["interface_map"][iface_id] = _get_child_text(iface, "descr") or iface_id.upper()
+        nets = maps["interface_nets"]
+        add_interface_address(nets, iface_id, _get_child_text(iface, "ipaddr"),
+                              _get_child_text(iface, "subnet"), wan=iface_id == "wan")
+        add_interface_address(nets, iface_id, _get_child_text(iface, "ipaddrv6"),
+                              _get_child_text(iface, "subnetv6"))
+    # Virtual IPs (CARP, IP alias) are firewall addresses too.
+    for vip in root.findall("virtualip/vip"):
+        iface_id = _get_child_text(vip, "interface").lower()
+        if iface_id in maps["interface_nets"]:
+            address = _get_child_text(vip, "subnet")
+            if address:
+                add_interface_address(maps["interface_nets"], iface_id, f"{address}/"
+                                      f"{128 if ':' in address else 32}")
 
 
 def parse_pfsense_backup(root):
@@ -163,8 +131,8 @@ def parse_pfsense_backup(root):
         tuple: (aliases_dict, rules_list) in API-compatible format.
     """
     if not isinstance(root, ET.Element):
-        root = ET.parse(root).getroot()
-    maps = _empty_maps()
+        root = parse(root).getroot()
+    maps = empty_maps()
 
     for alias in root.findall("aliases/alias"):
         name = _get_child_text(alias, "name")
@@ -172,7 +140,7 @@ def parse_pfsense_backup(root):
             continue
         content = _get_child_text(alias, "address").replace("\n", ", ")
         description = _get_child_text(alias, "descr")
-        _register_alias(maps, name, _get_child_text(alias, "type"), content, description)
+        register_alias(maps, name, _get_child_text(alias, "type"), content, description)
 
     _register_interfaces(root, maps)
 
@@ -184,6 +152,14 @@ def parse_pfsense_backup(root):
         rules.append(entry)
 
     return maps, rules
+
+
+def _quick_value(rule_elem):
+    """True / False from <quick> (empty element or "1" = quick), None when absent."""
+    elem = rule_elem.find("quick")
+    if elem is None:
+        return None
+    return (elem.text or "").strip().lower() not in _FALSE_FLAG_VALUES
 
 
 def _parse_pfsense_rule(rule_elem):
@@ -202,6 +178,8 @@ def _parse_pfsense_rule(rule_elem):
         "tracker": _get_child_text(rule_elem, "tracker"),
         "disabled": _has_flag(rule_elem, "disabled"),
         "floating": is_floating_flag(_get_child_text(rule_elem, "floating")) or is_interface_floating(interface),
+        "quick": _quick_value(rule_elem),
+        "direction": _get_child_text(rule_elem, "direction") or None,
     }
 
 
@@ -218,8 +196,8 @@ def parse_opnsense_backup(root):
         tuple: (aliases_dict, rules_list) in API-compatible format.
     """
     if not isinstance(root, ET.Element):
-        root = ET.parse(root).getroot()
-    maps = _empty_maps()
+        root = parse(root).getroot()
+    maps = empty_maps()
 
     for alias in root.findall(".//aliases/alias"):
         name = _get_child_text(alias, "name")
@@ -229,7 +207,7 @@ def parse_opnsense_backup(root):
         description = (_get_child_text(alias, "description")
                        or _get_child_text(alias, "descr")
                        or name.lower())
-        _register_alias(maps, name, _get_child_text(alias, "type"), content, description)
+        register_alias(maps, name, _get_child_text(alias, "type"), content, description)
 
     _register_interfaces(root, maps, require_enabled=True)
 
@@ -260,6 +238,8 @@ def _parse_opnsense_rule(rule_elem):
         "destination_port": _extract_port(dest) or _get_child_text(rule_elem, "destination_port") or None,
         "description": _get_child_text(rule_elem, "descr") or _get_child_text(rule_elem, "description"),
         "floating": is_floating_flag(_get_child_text(rule_elem, "floating")) or is_interface_floating(interface),
+        "quick": _quick_value(rule_elem),
+        "direction": _get_child_text(rule_elem, "direction") or None,
         "source_net": source_val,
         "destination_net": dest_val,
         "enabled": not _has_flag(rule_elem, "disabled"),
@@ -291,6 +271,8 @@ def _parse_opnsense_rule_26_1(rule_elem):
         "destination_port": _get_child_text(rule_elem, "destination_port") or None,
         "description": _get_child_text(rule_elem, "description"),
         "floating": is_floating_flag(_get_child_text(rule_elem, "floating")) or is_interface_floating(interface),
+        "quick": _quick_value(rule_elem),
+        "direction": _get_child_text(rule_elem, "direction") or None,
         "source_net": source_val,
         "destination_net": dest_val,
         "enabled": _get_child_text(rule_elem, "enabled", "1") == "1",
@@ -317,9 +299,89 @@ def _parse_nat_rule(rule_elem):
     }
 
 
+def _parse_outbound_rule(rule_elem):
+    """Outbound (source) NAT rule: pfSense / OPNsense legacy <nat><outbound><rule>."""
+    source = rule_elem.find("source")
+    dest = rule_elem.find("destination")
+    target = _get_child_text(rule_elem, "target")
+    if target in ("other-subnet", ""):
+        target = _get_child_text(rule_elem, "targetip") or target
+        bits = _get_child_text(rule_elem, "targetip_subnet")
+        if target and bits and "/" not in target:
+            target = f"{target}/{bits}"
+    return {
+        "_nat_type": "OUTBOUND",
+        "interface": _get_child_text(rule_elem, "interface") or None,
+        "protocol": _get_child_text(rule_elem, "protocol") or None,
+        "source": _extract_address(source) or "any",
+        "source_port": _get_child_text(rule_elem, "sourceport") or _extract_port(source),
+        "destination": _extract_address(dest) or "any",
+        "destination_port": _get_child_text(rule_elem, "dstport") or _extract_port(dest),
+        "target": target or None,
+        "natport": _get_child_text(rule_elem, "natport") or None,
+        "nonat": _has_flag(rule_elem, "nonat"),
+        "descr": _get_child_text(rule_elem, "descr"),
+        "disabled": _has_flag(rule_elem, "disabled"),
+        "uuid": rule_elem.get("uuid") or None,
+    }
+
+
+def _parse_onetoone(rule_elem):
+    """1:1 NAT: pfSense <nat><onetoone>, OPNsense legacy <nat><onetoone> or MVC onetoone rule."""
+    source = rule_elem.find("source")
+    dest = rule_elem.find("destination")
+    return {
+        "_nat_type": "1:1",
+        "interface": _get_child_text(rule_elem, "interface") or None,
+        "protocol": None,
+        "source": _extract_address(source) or _get_child_text(rule_elem, "source_net") or "any",
+        "destination": _extract_address(dest) or _get_child_text(rule_elem, "destination_net") or "any",
+        "target": _get_child_text(rule_elem, "external") or None,
+        "descr": _get_child_text(rule_elem, "descr") or _get_child_text(rule_elem, "description"),
+        "disabled": (_has_flag(rule_elem, "disabled")
+                     or _get_child_text(rule_elem, "enabled", "1") == "0"),
+        "uuid": rule_elem.get("uuid") or None,
+    }
+
+
+def _parse_mvc_snat(rule_elem):
+    """OPNsense MVC source NAT rule (OPNsense/Firewall/Filter/snatrules/rule)."""
+    return {
+        "_nat_type": "OUTBOUND",
+        "interface": _get_child_text(rule_elem, "interface") or None,
+        "protocol": _get_child_text(rule_elem, "protocol") or None,
+        "source": _get_child_text(rule_elem, "source_net", "any"),
+        "source_port": _get_child_text(rule_elem, "source_port") or None,
+        "destination": _get_child_text(rule_elem, "destination_net", "any"),
+        "destination_port": _get_child_text(rule_elem, "destination_port") or None,
+        "target": _get_child_text(rule_elem, "target") or None,
+        "natport": _get_child_text(rule_elem, "target_port") or None,
+        "nonat": _get_child_text(rule_elem, "nonat") == "1",
+        "descr": _get_child_text(rule_elem, "description"),
+        "disabled": _get_child_text(rule_elem, "enabled", "1") == "0",
+        "uuid": rule_elem.get("uuid") or None,
+    }
+
+
 def parse_nat_rules(root):
-    """Return port forward (destination NAT) rules from a parsed backup root."""
-    return [_parse_nat_rule(rule) for rule in root.findall("nat/rule")]
+    """Return NAT rules (port forwards, outbound, 1:1) from a parsed backup root."""
+    rules = []
+    for rule in root.findall("nat/rule"):
+        entry = _parse_nat_rule(rule)
+        entry["_nat_type"] = "PORT FORWARD"
+        rules.append(entry)
+    rules.extend(_parse_outbound_rule(r) for r in root.findall("nat/outbound/rule"))
+    rules.extend(_parse_mvc_snat(r) for r in root.findall("OPNsense/Firewall/Filter/snatrules/rule"))
+    onetoone = root.findall("nat/onetoone")
+    onetoone = [child for elem in onetoone for child in (elem.findall("rule") or [elem])]
+    onetoone += root.findall("OPNsense/Firewall/Filter/onetoone/rule")
+    rules.extend(_parse_onetoone(r) for r in onetoone if len(r))
+    return rules
+
+
+def outbound_nat_mode(root):
+    """Outbound NAT mode (automatic, hybrid, advanced, disabled) or ''."""
+    return _get_child_text(root.find("nat/outbound"), "mode")
 
 
 def parse_xml_backup(xml_path):
@@ -342,8 +404,8 @@ def parse_xml_backup(xml_path):
         return None, [], None, None, []
 
     try:
-        root = ET.parse(xml_path).getroot()
-    except ET.ParseError as e:
+        root = parse(xml_path).getroot()
+    except ParseError as e:
         logging.error(f"Invalid XML file: {e}")
         return None, [], None, None, []
 
@@ -360,9 +422,10 @@ def parse_xml_backup(xml_path):
     parser = parse_pfsense_backup if gateway_type == "pfsense" else parse_opnsense_backup
     aliases_dict, rules = parser(root)
     nat_rules = parse_nat_rules(root)
+    aliases_dict["nat_outbound_mode"] = outbound_nat_mode(root)
 
     logging.info(
         f"✓ Parsed {len(rules)} rules and {len(aliases_dict['alias_details'])} aliases from XML backup"
-        + (f" ({len(nat_rules)} NAT port forward(s))" if nat_rules else "")
+        + (f" ({len(nat_rules)} NAT rule(s))" if nat_rules else "")
     )
     return aliases_dict, rules, gateway_type, gateway_name, nat_rules

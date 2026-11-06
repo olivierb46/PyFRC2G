@@ -7,10 +7,6 @@ venv/
 __pycache__/
 *.pyc
 
-# Git
-.git
-
-
 # Outputs locales
 results/
 output_*.csv
@@ -24,3 +20,27 @@ output_*.csv
 build/
 dist/
 .pytest_cache/
+
+# Secrets (PyFRC2G .env file, firewall lists with credentials)
+.env
+*.env
+!.env.example
+firewalls.json
+
+# Firewall backups and exports (contain addressing, users, hashes): never commit them
+*.xml
+*.conf
+*.tgz
+*.tar.gz
+backup*/
+res/
+
+# Web application data (encrypted database, generated key)
+pyfrc2g-data/
+*.db
+*.db-wal
+*.db-shm
+secret.key
+
+# Tools
+.ruff_cache/

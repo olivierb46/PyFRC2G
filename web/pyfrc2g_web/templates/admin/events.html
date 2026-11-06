@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% from "macros.html" import data_table %}
+{% block title %}Event log{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Event log</h1><div class="sub">Sign-ins, configuration changes, uploads and manual analyses (last 300).</div></div></div>
+{{ data_table("events", ["time", "username", "action", "detail"], events, empty="No event yet.") }}
+{% endblock %}

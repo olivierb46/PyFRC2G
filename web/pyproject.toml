@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyfrc2g-web"
+version = "1.0.0"  # keep in sync with pyfrc2g_web/__init__.py
+description = "Web application for PyFRC2G: firewall rules dashboard, audit, graphs and reports, encrypted storage"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "PyFRC2G Contributors" }]
+keywords = ["firewall", "pfsense", "opnsense", "fortigate", "audit", "compliance", "flask"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Flask",
+    "Intended Audience :: System Administrators",
+    "Topic :: System :: Networking :: Firewalls",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+requires-python = ">=3.9"
+# The PyFRC2G engine is in ../engine (not on PyPI): install both in one command,
+#   pip install ./engine ./web          (from the repository root)
+# or from GitHub:
+#   pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=engine" \
+#               "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=web"
+dependencies = [
+    "pyfrc2g>=2.2.0",
+    "flask>=2.2",
+    "cryptography>=41",
+    "waitress>=2.1",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.1.0"]
+
+[project.scripts]
+pyfrc2g-web = "pyfrc2g_web.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyfrc2g_web*"]
+
+[tool.setuptools.package-data]
+"pyfrc2g_web" = ["templates/*.html", "templates/admin/*.html", "static/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

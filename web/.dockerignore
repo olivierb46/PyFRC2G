@@ -1,0 +1,3 @@
+# The image only needs requirements.txt: the code is mounted as volumes at run time.
+*
+!requirements.txt

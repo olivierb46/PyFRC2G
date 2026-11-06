@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge, level_badge %}
+{% block title %}API firewalls{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>API firewalls</h1><div class="sub">pfSense / OPNsense analysed through their API. Credentials are encrypted in the database.</div></div>
+<div class="actions">
+  <form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<input type="hidden" name="force" value="1"><button class="btn secondary">Analyse all now</button></form>
+  <a class="btn" href="{{ url_for('admin.firewall') }}">Add a firewall</a></div></div>
+{% if firewalls %}
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Site / tags</th><th>Status</th><th>Schedule</th><th>Last analysis</th><th>Risk</th><th></th></tr></thead><tbody>
+{% for fw in firewalls %}{% set gw = gateways.get(fw.id) %}{% set o = options[fw.id] %}<tr>
+<td><a href="{{ url_for('admin.firewall', firewall_id=fw.id) }}"><b>{{ fw.name }}</b></a>{% if o.description %}<div class="small muted">{{ o.description }}</div>{% endif %}</td><td>{{ fw.type }}</td>
+<td class="mono">{{ fw.config.url }}</td>
+<td>{{ o.site }}{% for t in o.tags %} <span class="tag">{{ t }}</span>{% endfor %}</td>
+<td>{{ badge("enabled", "ok") if fw.enabled else badge("disabled") }}{% if fw.config.verify_ssl or fw.config.ca_pem %} {{ badge("TLS verified", "info") }}{% endif %}</td>
+<td class="nowrap">{% if o.schedule_mode == "manual" %}<span class="muted">manual</span>{% elif o.schedule_mode == "custom" %}every {{ o.schedule }}{% elif schedule %}every {{ schedule }} <span class="muted small">(global)</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+<td>{% if gw %}<a href="{{ url_for('main.gateway', name=gw.name) }}">{{ gw.updated }}</a>{% else %}<span class="muted">never</span>{% endif %}</td>
+<td>{{ level_badge(gw.level if gw else None) }}</td>
+<td class="nowrap"><form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<input type="hidden" name="firewall_id" value="{{ fw.id }}"><input type="hidden" name="force" value="1"><button class="btn small" {{ 'disabled' if not fw.enabled }}>Analyse</button></form>
+<a class="btn small secondary" href="{{ url_for('admin.firewall', firewall_id=fw.id) }}">Edit</a></td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty"><h2>No API firewall yet</h2><p>Add a pfSense (REST API v2 package) or OPNsense firewall to analyse it automatically.</p><a class="btn" href="{{ url_for('admin.firewall') }}">Add a firewall</a></div>{% endif %}
+{% endblock %}

@@ -1,11 +1,16 @@
 """
-NAT (port forward) rules: normalization of API/XML entries into flat rows.
+NAT rules: normalization of API/XML entries into flat rows.
+
+TYPE column:
+    PORT FORWARD  destination NAT: DESTINATION/DESTINATION PORT are rewritten to TARGET/TARGET PORT
+    OUTBOUND      source NAT: SOURCE going to DESTINATION leaves with address TARGET (port TARGET PORT)
+    1:1           SOURCE (internal) <-> TARGET (external address)
 """
 
 from pyfrc2g.utils import map_value, normalize_interface
 
 NAT_FIELDNAMES = [
-    "INTERFACE", "PROTOCOL", "SOURCE", "SOURCE PORT", "DESTINATION", "DESTINATION PORT",
+    "TYPE", "INTERFACE", "PROTOCOL", "SOURCE", "SOURCE PORT", "DESTINATION", "DESTINATION PORT",
     "TARGET", "TARGET PORT", "COMMENT", "DISABLED", "RULE ID",
 ]
 
@@ -31,6 +36,10 @@ def _address(value):
     return value
 
 
+def _flag(value):
+    return value not in (None, False, 0, "0", "", "no", "false")
+
+
 def _is_disabled(entry):
     disabled = entry.get("disabled")
     if disabled is not None:
@@ -45,9 +54,16 @@ def nat_entry_to_row(entry, any_value="Any"):
     destination = _address(_first(entry, "destination", "destination_net"))
     source_port = _first(entry, "source_port", "source.port")
     destination_port = _first(entry, "destination_port", "destination.port", "dstport")
-    target = _first(entry, "target", "target_ip")
-    target_port = _first(entry, "local_port", "local-port", "target_port", "localport")
+    nat_type = entry.get("_nat_type") or "PORT FORWARD"
+    target = _first(entry, "target", "target_ip", "targetip", "external")
+    target_port = _first(entry, "local_port", "local-port", "target_port", "localport", "natport")
+    if nat_type == "OUTBOUND":
+        if _flag(entry.get("nonat")):
+            target, target_port = "No NAT", None
+        elif not target:
+            target = "Interface address"
     return {
+        "TYPE": nat_type,
         "INTERFACE": map_value(normalize_interface(_first(entry, "interface")) or None,
                                "interface", any_value),
         "PROTOCOL": str(_first(entry, "protocol") or any_value),

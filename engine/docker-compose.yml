@@ -1,0 +1,33 @@
+# PyFRC2G engine - scheduled API analysis (command line mode). Run from the engine/ folder.
+# For the web interface, see ../web/
+#
+#   cd engine
+#   cp examples/env.example .env          # firewall credentials (PYFRC2G_PFS_URL / _TOKEN...)
+#   docker compose up -d --build
+#   reports in the pyfrc2g-results volume (results/<firewall>/)
+
+services:
+  pyfrc2g:
+    build: .
+    image: pyfrc2g:2.2.0
+    restart: unless-stopped
+    command: ["--api", "--every", "6h"]
+    env_file: .env
+    # Hardening: read-only root filesystem, no privileges (writes go to the volume and /tmp).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PYFRC2G_VERIFY_SSL: "true"
+      # PYFRC2G_FIREWALLS_FILE: /config/firewalls.yml
+      # PYFRC2G_POLICY_FILE: /config/policy.yml
+    volumes:
+      - pyfrc2g-results:/data
+      # - ./firewalls.yml:/config/firewalls.yml:ro
+      # - ./examples/policy.example.yml:/config/policy.yml:ro
+
+volumes:
+  pyfrc2g-results:

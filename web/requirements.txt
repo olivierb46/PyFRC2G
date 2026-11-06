@@ -1,0 +1,17 @@
+# Runtime dependencies of the web application and of the engine (used by the Docker image,
+# whose code is mounted as volumes). Keep in sync with web/pyproject.toml and
+# engine/pyproject.toml.
+
+# PyFRC2G engine
+requests>=2.25.0
+graphviz>=0.16
+reportlab>=3.6.0
+pypdf>=3.9
+openpyxl>=3.0
+pyyaml>=5.1
+defusedxml>=0.7
+
+# Web application
+flask>=2.2
+cryptography>=41
+waitress>=2.1

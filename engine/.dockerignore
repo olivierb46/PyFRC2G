@@ -1,0 +1,21 @@
+# Keep the build context small and never copy secrets or results into the image.
+.git
+.gitignore
+.env
+*.env
+env/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+results/
+pyfrc2g-data/
+output_*.csv
+.vscode/
+.idea/
+img/

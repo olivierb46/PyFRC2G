@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Users</h1><div class="sub">admin: configuration, analyses and users · viewer: reports and graphs.</div></div></div>
+<div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Created</th><th>Last sign-in</th><th>Change role</th><th>Reset password</th><th></th></tr></thead><tbody>
+{% for u in users %}<tr>
+<td><b>{{ u.username }}</b>{% if u.id == g.user.id %} <span class="badge info">you</span>{% endif %}</td>
+<td>{{ badge(u.role) }}</td><td class="muted nowrap">{{ u.created }}</td><td class="muted nowrap">{{ u.last_login or "never" }}</td>
+<td><form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}">{{ csrf() }}<input type="hidden" name="action" value="role">
+  <select name="role" aria-label="Role">{% for r in roles %}<option value="{{ r }}" {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select> <button class="btn small secondary">Apply</button></form></td>
+<td><form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}">{{ csrf() }}<input type="hidden" name="action" value="password">
+  <input type="password" name="password" minlength="10" placeholder="new password" aria-label="New password" autocomplete="new-password" required> <button class="btn small secondary">Set</button></form></td>
+<td>{% if u.id != g.user.id %}<form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}" data-confirm="Delete the user {{ u.username }}?">{{ csrf() }}<input type="hidden" name="action" value="delete"><button class="btn small danger">Delete</button></form>{% endif %}</td>
+</tr>{% endfor %}</tbody></table></div>
+<form class="card section" method="post">{{ csrf() }}
+  <h2>New user</h2>
+  <div class="grid cols-3">
+    <div><label for="username">User name</label><input type="text" id="username" name="username" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}" autocomplete="off"></div>
+    <div><label for="role">Role</label><select id="role" name="role">{% for r in roles %}<option value="{{ r }}" {{ 'selected' if r == 'viewer' }}>{{ r }}</option>{% endfor %}</select></div>
+    <div><label for="password">Password</label><input type="password" id="password" name="password" minlength="10" required autocomplete="new-password"><div class="help">At least 10 characters.</div></div>
+  </div>
+  <div class="form-actions"><button class="btn">Create user</button></div>
+</form>
+{% endblock %}

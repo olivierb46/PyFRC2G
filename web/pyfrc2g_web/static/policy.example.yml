@@ -1,0 +1,128 @@
+# PyFRC2G - example compliance policy
+#
+# Usage:
+#   pyfrc2g --backup config.xml --policy examples/policy.example.yml
+#   or set POLICY_FILE = "policy.yml" in pyfrc2g/config.py (PYFRC2G_POLICY_FILE in .env)
+#
+# Copy this file, then adapt the interface names (ids such as wan / lan / opt1, or their
+# descriptions such as GUEST / DMZ) and the aliases to your firewall. Violations are listed
+# in the audit (CSV, PDF, HTML, Excel) as POLICY:<id> and count in the risk score.
+#
+# How a policy is evaluated
+#   - A rule that satisfies EVERY condition of "match" is a violation.
+#   - With a "require" block, the violation is a rule that satisfies "match" but NOT "require".
+#   - Disabled rules are ignored unless a condition on "disabled" is given.
+#
+# Conditions (a list means "any of", a "!" prefix negates the value)
+#   interface    interface id or description            interface: [wan, WAN2]
+#   action       pass / block / reject                  action: pass
+#   protocol     tcp, udp, icmp... (tcp/udp matches both) protocol: udp
+#   port         port, range or port alias: matches     port: [22, "8000-8090", web_ports]
+#                when the rule can reach one of them
+#   source       IP, network, alias or interface        source: lan
+#   destination  network: matches when the rule can     destination: ["10.0.0.0/8", srv_db]
+#                reach part of it
+#   comment      regular expression (case-insensitive)  comment: "CHG-\\d+"
+#   disabled     true / false                           disabled: true
+#   floating     true / false                           floating: true
+#   ip_version   4 or 6                                 ip_version: 6
+#   gateway      text contained in the GATEWAY column   gateway: fw-paris
+#                (useful with several firewalls)
+#
+# Severity: CRITICAL, HIGH, MEDIUM or LOW (default MEDIUM).
+# The same structure can be written in JSON ({"policies": [...]}) without PyYAML.
+
+policies:
+
+  # --- Exposure to the Internet ---------------------------------------------------------
+
+  - id: no-remote-admin-from-wan
+    description: Remote administration (SSH, Telnet, RDP, VNC) must not be reachable from the Internet
+    severity: CRITICAL
+    match:
+      interface: wan
+      action: pass
+      port: [22, 23, 3389, 5900]
+
+  - id: no-database-from-wan
+    description: Database and cache services must never be published on the Internet
+    severity: CRITICAL
+    match:
+      interface: wan
+      action: pass
+      port: [1433, 1521, 3306, 5432, 6379, 9200, 27017]
+
+  - id: no-file-sharing-from-wan
+    description: SMB / NetBIOS / NFS must not be reachable from the Internet
+    severity: CRITICAL
+    match:
+      interface: wan
+      action: pass
+      port: [135, 139, 445, 2049]
+
+  - id: no-ipv6-inbound-from-wan
+    description: No IPv6 traffic is allowed in from the Internet (IPv6 not published yet)
+    severity: HIGH
+    match:
+      interface: wan
+      action: pass
+      ip_version: 6
+
+  # --- Segmentation -----------------------------------------------------------------------
+
+  - id: guest-isolated
+    description: The guest network must not reach the internal networks (LAN, DMZ)
+    severity: HIGH
+    match:
+      interface: GUEST
+      action: pass
+      destination: [lan, DMZ]
+
+  - id: dmz-cannot-reach-lan
+    description: Servers in the DMZ must not open connections to the LAN
+    severity: HIGH
+    match:
+      interface: DMZ
+      action: pass
+      destination: lan
+
+  - id: no-telnet
+    description: Telnet is forbidden on every interface (use SSH)
+    severity: HIGH
+    match:
+      action: pass
+      protocol: tcp
+      port: 23
+
+  # --- Rule hygiene -----------------------------------------------------------------------
+
+  - id: floating-rules-do-not-pass
+    description: Floating rules are reserved for blocking and traffic shaping
+    severity: MEDIUM
+    match:
+      floating: true
+      action: pass
+
+  - id: wan-rules-reference-a-change
+    description: Every rule opening traffic from the Internet must reference a change ticket (CHG-1234)
+    severity: MEDIUM
+    match:
+      interface: wan
+      action: pass
+    require:
+      comment: "CHG-\\d+"
+
+  - id: pass-rules-documented
+    description: Every pass rule must have a meaningful description (5 characters at least)
+    severity: LOW
+    match:
+      action: pass
+    require:
+      comment: ".{5,}"
+
+  - id: no-forgotten-disabled-allow
+    description: Disabled pass rules must be deleted instead of being kept "just in case"
+    severity: LOW
+    match:
+      disabled: true
+      action: "!block"

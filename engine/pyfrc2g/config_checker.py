@@ -3,8 +3,6 @@ Configuration checker for PyFRC2G.
 Validates that firewall targets are properly configured before running in API mode.
 """
 
-import logging
-
 # Placeholder values that indicate "not configured" (compared case-insensitively).
 _PLACEHOLDERS = {
     "https://<pfs_address>", "https://<opns_address>", "<your_pfsense_api_token>",
@@ -24,7 +22,18 @@ def check_target(target):
     Returns:
         list: Error messages (empty if the target is usable).
     """
+    import os
+
+    from pyfrc2g.config import unresolved_env_refs
+
     name = target.get("name") or target.get("url") or "firewall"
+    missing_env = sorted(set(unresolved_env_refs(target)))
+    if missing_env:
+        return [f"[{name}] environment variable(s) not set: {', '.join(missing_env)} "
+                "(export them or add them to the .env file)"]
+    ca_bundle = target.get("ca_bundle")
+    if ca_bundle and not os.path.isfile(ca_bundle):
+        return [f"[{name}] CA bundle not found: {ca_bundle}"]
     gateway_type = (target.get("type") or "").strip().lower()
     if gateway_type not in ("pfsense", "opnsense"):
         return [f"[{name}] type must be 'pfsense' or 'opnsense' (got {gateway_type!r})"]
@@ -41,35 +50,3 @@ def check_target(target):
         if _is_placeholder(target.get("secret")):
             errors.append(f"[{name}] OPNSense API secret is not configured (OPNS_SECRET or 'secret')")
     return errors
-
-
-def check_configuration(target=None):
-    """
-    Check that API configuration is valid.
-
-    Args:
-        target: Target dict to check; default: the single-firewall config variables.
-
-    Returns:
-        int: 0 = OK, 2 = critical (must fix).
-    """
-    from pyfrc2g.config import legacy_target
-
-    errors = check_target(target or legacy_target())
-    for msg in errors:
-        logging.error("  - %s", msg)
-    return 2 if errors else 0
-
-
-def run_configuration_check(skip_prompt=False, target=None):
-    """
-    Run configuration check. Call this before starting API mode.
-
-    Args:
-        skip_prompt: Kept for backward compatibility (no interactive prompt anymore).
-        target: Target dict to check.
-
-    Returns:
-        bool: True if OK to proceed, False if should exit.
-    """
-    return check_configuration(target) == 0

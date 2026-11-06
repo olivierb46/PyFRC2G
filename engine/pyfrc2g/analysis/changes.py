@@ -10,6 +10,8 @@ import csv
 import hashlib
 import os
 
+from pyfrc2g.model.rules import rule_summary
+
 CHANGES_FIELDNAMES = ["CHANGE", "GATEWAY", "RULE ORDER", "RULE ID", "RULE", "DETAIL"]
 _IDENTITY_FIELDS = ("GATEWAY", "SOURCE", "DESTINATION", "PROTOCOL", "PORT", "ACTION", "COMMENT")
 _IGNORED_FIELDS = {"RULE ORDER", "RULE ID"}
@@ -27,7 +29,7 @@ def read_rows(csv_path):
 
 def _content_key(row):
     raw = "\x1f".join((row.get(field) or "").strip() for field in _IDENTITY_FIELDS)
-    return "content:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return "content:" + hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _index(rows, use_ids):
@@ -44,18 +46,13 @@ def _index(rows, use_ids):
     return index
 
 
-def _summary(row):
-    return (f"{row.get('ACTION', '')} {row.get('SOURCE', '')} -> {row.get('DESTINATION', '')} "
-            f"[{row.get('PROTOCOL', '')} {row.get('PORT', '')}] {row.get('COMMENT', '')}").strip()
-
-
 def _change(kind, row, detail=""):
     return {
         "CHANGE": kind,
         "GATEWAY": row.get("GATEWAY", ""),
         "RULE ORDER": row.get("RULE ORDER", ""),
         "RULE ID": row.get("RULE ID", ""),
-        "RULE": _summary(row),
+        "RULE": rule_summary(row, with_comment=True),
         "DETAIL": detail,
     }
 
@@ -81,7 +78,9 @@ def diff_rules(previous_rows, previous_fields, current_rows):
         modified = [
             f"{field}: {old.get(field, '')} -> {row.get(field, '')}"
             for field in row
-            if field not in _IGNORED_FIELDS and (old.get(field) or "") != (row.get(field) or "")
+            if field not in _IGNORED_FIELDS and not field.startswith("_")
+            and field in old  # Column added by a newer version: not a rule change.
+            and (old.get(field) or "") != (row.get(field) or "")
         ]
         if modified:
             changes.append(_change("MODIFIED", row, "; ".join(modified)))

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, level_badge, runs_table %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Dashboard</h1>
+  <div class="sub">{% if next_run %}Next automatic analysis {{ next_run|datetime }}{% if schedule %} · default interval {{ schedule }}{% endif %}{% else %}No automatic analysis (Settings → schedule, or the schedule of each firewall){% endif %}</div></div>
+  {% if g.user.role == 'admin' %}<div class="actions">
+    <a class="btn secondary" href="{{ url_for('main.uploads') }}">Analyse a file</a>
+    <form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<button class="btn" {{ 'disabled' if not kpis.api }}>Analyse API firewalls ({{ kpis.api }})</button></form>
+  </div>{% endif %}
+</div>
+
+<div class="grid cols-4">
+  <div class="card kpi"><span class="label">Firewalls analysed</span><span class="value">{{ kpis.gateways }}</span></div>
+  <div class="card kpi"><span class="label">Rules</span><span class="value">{{ kpis.rules }}</span></div>
+  <div class="card kpi {{ 'bad' if kpis.critical }}"><span class="label">Critical findings</span><span class="value">{{ kpis.critical }}</span></div>
+  <div class="card kpi"><span class="label">Average risk score</span><span class="value">{{ kpis.average if kpis.average is not none else "—" }}</span></div>
+</div>
+
+{% if sites or tags %}
+<form class="filters-bar section" method="get">
+  {% if sites %}<label for="f-site">Site</label><select id="f-site" name="site" data-autosubmit><option value="">All</option>{% for s in sites %}<option {{ 'selected' if s == site }}>{{ s }}</option>{% endfor %}</select>{% endif %}
+  {% if tags %}<label for="f-tag">Tag</label><select id="f-tag" name="tag" data-autosubmit><option value="">All</option>{% for t in tags %}<option {{ 'selected' if t == tag }}>{{ t }}</option>{% endfor %}</select>{% endif %}
+  <noscript><button class="btn small">Filter</button></noscript>
+  {% if site or tag %}<a class="small" href="{{ url_for('main.dashboard') }}">Clear filters</a>{% endif %}
+</form>
+{% endif %}
+<div class="section">
+{% if gateways %}
+<div class="grid cols-auto">
+  {% for gw in gateways %}
+  <a class="card fw-card plain" href="{{ url_for('main.gateway', name=gw.name) }}">
+    <div class="top">
+      <div><div class="name">{{ gw.name }}</div>
+      <div class="meta">{{ gw.gateway_type }} · {{ "API" if gw.kind == "api" else "file" }}{% if gw.site %} · {{ gw.site }}{% endif %} · {{ gw.updated }}</div>
+      {% if gw.description %}<div class="meta">{{ gw.description }}</div>{% endif %}</div>
+      <div class="score-ring {{ gw.level }}" title="Risk score">{{ gw.score if gw.score is not none else "–" }}</div>
+    </div>
+    {{ charts.sparkline(gw.history) }}
+    <div class="stat-row"><span><b>{{ gw.rules or 0 }}</b> rules</span><span><b>{{ gw.findings or 0 }}</b> findings</span>
+      {% if gw.critical %}<span class="badge CRITICAL">{{ gw.critical }} critical</span>{% endif %}{{ level_badge(gw.level) }}</div>
+    {% if gw.tags %}<div class="tags">{% for t in gw.tags %}<span class="tag">{{ t }}</span>{% endfor %}</div>{% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% elif site or tag %}
+<div class="card empty">No firewall matches these filters. <a href="{{ url_for('main.dashboard') }}">Clear filters</a></div>
+{% else %}
+<div class="card empty">
+  <h2>No firewall analysed yet</h2>
+  <p>Upload a configuration file (pfSense / OPNsense config.xml, FortiGate, iptables, nftables, Stormshield)
+  {% if g.user.role == 'admin' %}or <a href="{{ url_for('admin.firewall') }}">add an API firewall</a>{% endif %}.</p>
+  <a class="btn" href="{{ url_for('main.uploads') }}">Analyse a configuration file</a>
+</div>
+{% endif %}
+</div>
+
+{% if gateways|length > 1 %}
+<div class="grid cols-2 section">
+  <div class="card"><h3>Risk score by firewall</h3>{{ charts.bars(gateways|map_score) }}</div>
+  <div class="card"><h3>Critical findings by firewall</h3>{{ charts.bars(gateways|map_critical) }}</div>
+</div>
+{% endif %}
+
+<div class="section"><h2>Recent analyses</h2>{{ runs_table(runs) }}</div>
+{% endblock %}
