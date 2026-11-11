@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime
 
 from pyfrc2g_web.crypto import Cipher
@@ -94,10 +95,11 @@ def now():
 
 
 class Database:
-    """Data access layer; every method opens its own connection (thread-safe)."""
+    """Data access layer; one reused connection per thread (opening one is slow on NFS)."""
 
     def __init__(self, path, data_dir):
         self.path = path
+        self._local = threading.local()
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
@@ -122,10 +124,12 @@ class Database:
                 os.chmod(name, 0o600)
 
     def _conn(self):
-        conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        return _Closing(conn)
+        if getattr(self._local, "conn", None) is None:
+            conn = sqlite3.connect(self.path, timeout=30)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn, self._local.depth = conn, 0
+        return _Transaction(self._local)
 
     # ------------------------------------------------------------------ meta / events
 
@@ -484,21 +488,33 @@ class Database:
             c.execute("UPDATE runs SET status='failed', finished=? WHERE status IN ('queued', 'running')", (now(),))
 
 
-class _Closing:
-    """sqlite3 connection as a context manager that commits and closes."""
+class _Transaction:
+    """One transaction per outermost block; the connection is dropped after an sqlite error."""
 
-    def __init__(self, conn):
-        self.conn = conn
+    def __init__(self, local):
+        self.local = local
 
     def __enter__(self):
-        return self.conn
+        self.local.depth += 1
+        return self.local.conn
 
     def __exit__(self, exc_type, exc, tb):
+        self.local.depth -= 1
+        if self.local.depth:
+            return False
+        conn = self.local.conn
+        broken = exc_type is not None and issubclass(exc_type, sqlite3.Error)
         try:
             if exc_type is None:
-                self.conn.commit()
+                conn.commit()
             else:
-                self.conn.rollback()
+                conn.rollback()
+        except sqlite3.Error:
+            broken = True
+            raise
         finally:
-            self.conn.close()
+            if broken:
+                self.local.conn = None
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
         return False
