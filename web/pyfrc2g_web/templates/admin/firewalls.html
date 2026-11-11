@@ -2,7 +2,7 @@
 {% from "macros.html" import csrf, badge, level_badge %}
 {% block title %}API firewalls{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>API firewalls</h1><div class="sub">pfSense / OPNsense analysed through their API. Credentials are encrypted in the database.</div></div>
+<div class="page-head"><div><h1>API firewalls</h1><div class="sub">pfSense / OPNsense / nfSensei analysed through their API. Credentials are encrypted in the database.</div></div>
 <div class="actions">
   <form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<input type="hidden" name="force" value="1"><button class="btn secondary">Analyse all now</button></form>
   <a class="btn" href="{{ url_for('admin.firewall') }}">Add a firewall</a></div></div>
@@ -19,5 +19,5 @@
 <td class="nowrap"><form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<input type="hidden" name="firewall_id" value="{{ fw.id }}"><input type="hidden" name="force" value="1"><button class="btn small" {{ 'disabled' if not fw.enabled }}>Analyse</button></form>
 <a class="btn small secondary" href="{{ url_for('admin.firewall', firewall_id=fw.id) }}">Edit</a></td>
 </tr>{% endfor %}</tbody></table></div>
-{% else %}<div class="card empty"><h2>No API firewall yet</h2><p>Add a pfSense (REST API v2 package) or OPNsense firewall to analyse it automatically.</p><a class="btn" href="{{ url_for('admin.firewall') }}">Add a firewall</a></div>{% endif %}
+{% else %}<div class="card empty"><h2>No API firewall yet</h2><p>Add a pfSense (REST API v2 package), OPNsense or nfSensei firewall to analyse it automatically.</p><a class="btn" href="{{ url_for('admin.firewall') }}">Add a firewall</a></div>{% endif %}
 {% endblock %}

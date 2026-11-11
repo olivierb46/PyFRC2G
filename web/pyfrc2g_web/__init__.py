@@ -10,9 +10,9 @@ SQLite database whose sensitive content is encrypted (see crypto.py and db.py).
     pyfrc2g-web                               # http://127.0.0.1:8080
 """
 
-__version__ = "1.0.0"
-MIN_ENGINE_VERSION = (2, 2, 0)
-ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=engine"
+__version__ = "1.1.0"
+MIN_ENGINE_VERSION = (2, 3, 0)
+ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine"
 
 import logging
 import os

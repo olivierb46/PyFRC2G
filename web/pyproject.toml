@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyfrc2g-web"
-version = "1.0.0"  # keep in sync with pyfrc2g_web/__init__.py
+version = "1.1.0"  # keep in sync with pyfrc2g_web/__init__.py
 description = "Web application for PyFRC2G: firewall rules dashboard, audit, graphs and reports, encrypted storage"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,13 +22,14 @@ requires-python = ">=3.9"
 # The PyFRC2G engine is in ../engine (not on PyPI): install both in one command,
 #   pip install ./engine ./web          (from the repository root)
 # or from GitHub:
-#   pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=engine" \
-#               "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=web"
+#   pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine" \
+#               "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=web"
 dependencies = [
-    "pyfrc2g>=2.2.0",
+    "pyfrc2g>=2.3.0",
     "flask>=2.2",
     "cryptography>=41",
     "waitress>=2.1",
+    "markdown>=3.4",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +43,7 @@ where = ["."]
 include = ["pyfrc2g_web*"]
 
 [tool.setuptools.package-data]
-"pyfrc2g_web" = ["templates/*.html", "templates/admin/*.html", "static/*"]
+"pyfrc2g_web" = ["templates/*.html", "templates/admin/*.html", "static/*", "docs/*.md"]
 
 [tool.ruff]
 line-length = 120

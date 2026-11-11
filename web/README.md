@@ -1,7 +1,7 @@
 # PyFRC2G-Web
 
 Web application of [PyFRC2G](../README.md): follow the firewall rules of pfSense, OPNsense,
-FortiGate, iptables, nftables and Stormshield from the browser, with dashboards, charts,
+FortiGate, iptables, nftables, nfSensei and Stormshield from the browser, with dashboards, charts,
 Graphviz graphs, audit and compliance reports, and all the data stored **encrypted** in an
 SQLite database.
 
@@ -61,12 +61,12 @@ pyfrc2g-web                             # http://127.0.0.1:8080
 Without cloning (git required):
 
 ```bash
-pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=engine" \
-            "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.2.0#subdirectory=web"
+pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine" \
+            "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=web"
 ```
 
 The engine is not published on PyPI: always install it with the web application as shown
-above (`pyfrc2g-web` declares `pyfrc2g>=2.2.0`).
+above (`pyfrc2g-web` declares `pyfrc2g>=2.3.0`).
 
 ## ✨ Features
 
@@ -78,10 +78,16 @@ above (`pyfrc2g-web` declares `pyfrc2g>=2.2.0`).
 
 - **Dashboard**: risk score of each firewall with its trend, number of rules and findings, critical findings, comparison charts, latest analyses
 - **Firewall page**: overview (risk score over time, findings by severity, actions, rules and risk per interface, most severe findings), filterable tables of rules, audit findings, changes, NAT and rule usage, zone matrix, Graphviz graphs displayed in the page (zones view and one graph per interface), PDF / HTML / Excel / CSV reports, history of the stored analyses
-- **Configuration files**: upload a backup in any supported format (`.zip` / `.tar.gz` for Stormshield); the analysis log is shown live
-- **API firewalls** (admin): pfSense / OPNsense with their credentials, TLS verification and internal CA; connection test; "analyse now" and automatic analysis on a schedule; per-firewall options (see below)
+- **Configuration files**: upload a backup in any supported format (`.zip` / `.tar.gz` for Stormshield); name, site and CISO Assistant ids can be given with the upload; once analysed, the firewall has its own **Settings** page (IP version, NAT, audit ports and WAN interfaces, compliance policy, reports, retention, CISO Assistant evidence / folder, site, owner, tags) applied to every new analysis of that file; the analysis log is shown live
+- **Parallel reading**: when a run analyses several API firewalls (“Analyse all”, scheduled analyses), up to *API firewalls read in parallel* of them (Administration > Settings, default 4) are read at the same time; the log lines are prefixed with the firewall name. Analyses and reports stay one after the other
+- **API firewalls** (admin): pfSense / OPNsense / nfSensei (API key) with their credentials, TLS verification and internal CA; connection test; "analyse now" and automatic analysis on a schedule; per-firewall options (see below)
 - **Settings** (admin): schedule, number of analyses kept, audit parameters (WAN interfaces, administration / sensitive ports, unused days) and the compliance policy edited and validated in the page
+- **Compare**: two firewalls or two analyses of the same firewall (rules, NAT rules, findings)
+- **Accepted risks** (admin): accept a finding from the Audit tab with a justification, owner and optional expiry date, for one rule or a whole check, on one firewall or all of them; it leaves the findings and the risk score (until it expires), and stays listed with its reason (Administration > Accepted risks). The engine receives the accepted risks too: the PDF, HTML and Excel reports and the risk score leave them out and list them in an “Accepted risks” section with their justification; adding or removing an exception regenerates the reports of the affected firewalls (API firewalls are read again, files analysed again)
+- **Policies by site / tag** (admin): compliance policies added to the global one for the firewalls of a site or carrying a tag (Administration > Policies)
+- **Export** of the dashboard (same site / tag filters) as an Excel workbook (summary, findings, accepted risks, changes) or a PDF summary for reviews
 - **CISO Assistant** (admin): send the PDF report of an analysis as a new revision of an evidence, manually from the firewall page or automatically after each new analysis; default evidence plus one evidence per firewall, connection test, history of the uploads
+- **How it works**: the page rendered from [`HOW_IT_WORKS.md`](../HOW_IT_WORKS.md) (analysis steps, findings, risk score, accepted risks, reports, CISO Assistant). The application serves its copy `pyfrc2g_web/docs/how-it-works.md`: after editing the file at the repository root, run `cp HOW_IT_WORKS.md web/pyfrc2g_web/docs/how-it-works.md`
 - **Users** (admin): `admin` (configuration, analyses, users) and `viewer` (reports, graphs) roles; **event log** of sign-ins, changes, uploads and manual analyses
 
 ### Firewall options
@@ -114,7 +120,8 @@ the comment of the revisions (variables `{gateway}`, `{date}`, `{score}`, `{leve
 Each upload sends the PDF report of the analysis to `POST /api/evidence-revisions/` (same API
 as the engine's `CISO_*` settings): manually with "Send to CISO Assistant" on the firewall page,
 or automatically after each new analysis when the option is enabled. A firewall can have its
-own evidence id (firewall page, tab Reports & files); otherwise the default one is used.
+own evidence id and folder (domain) id (or a folder per site, Administration > CISO Assistant: firewall folder, then site folder, then default folder), optionally the change report (CSV) as a second evidence (firewall page, tab Overview, or the firewall settings), for a proof
+belonging to another site; otherwise the default ones are used.
 Results are listed on the CISO Assistant page, on the firewall page and in the event log.
 In the web application the engine never uploads by itself, even if `PYFRC2G_CISO_*`
 variables are set.
@@ -141,7 +148,7 @@ clear on disk.
 | Address / port | `--host` / `--port`, `PYFRC2G_WEB_HOST` / `PYFRC2G_WEB_PORT` | `127.0.0.1` / `8080` (`0.0.0.0` in Docker) |
 | Data directory | `--data-dir`, `PYFRC2G_DATA_DIR` | `pyfrc2g-data` (`/data` in Docker) |
 | Schedule | Settings page (default interval; each firewall can have its own or be manual only), or `--every` / `PYFRC2G_SCHEDULE` at start-up | none |
-| Upload limit | `PYFRC2G_WEB_MAX_UPLOAD_MB` | 50 |
+| Upload limit | `PYFRC2G_WEB_MAX_UPLOAD_MB` | 50 (a full nfSensei backup `.tar.gz` can be several hundred MB: only its `running.yaml` is kept) |
 | Behind a reverse proxy | `PYFRC2G_WEB_PROXY=1` (trust `X-Forwarded-*`), `PYFRC2G_WEB_SECURE_COOKIES=1` (HTTPS only cookies) | off |
 
 ### Security
@@ -160,6 +167,7 @@ from other machines.
 
 | PyFRC2G-Web (`web/`) | PyFRC2G engine (`engine/`) |
 |----------------------|----------------------------|
+| 1.1.x | 2.3.0 or later |
 | 1.0.x | 2.2.0 or later |
 
 The application checks the engine version at start-up.

@@ -15,6 +15,7 @@ CHOICES = {
     "schedule_mode": ("global", "custom", "manual"),
     "ciso_auto": ("default", "always", "never"),
     "view": ("all", "rules", "zones"),
+    "nfsensei_config": ("running", "candidate"),
 }
 DEFAULTS = {
     "timeout": None, "interfaces": [], "detected_interfaces": [], "interface_labels": {},
@@ -22,8 +23,8 @@ DEFAULTS = {
     "wan_interfaces": [], "admin_ports": [], "sensitive_ports": [], "unused_days": None,
     "policy_mode": "global", "policy": "",
     "schedule_mode": "global", "schedule": "", "retention": None,
-    "ciso_evidence_id": "", "ciso_auto": "default",
-    "view": "all", "raster": False, "excel": True, "svg": True,
+    "ciso_evidence_id": "", "ciso_folder_id": "", "ciso_changes_evidence_id": "", "ciso_auto": "default",
+    "view": "all", "nfsensei_config": "running", "raster": False, "excel": True, "svg": True,
     "description": "", "site": "", "owner": "", "tags": [],
 }
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
@@ -86,8 +87,12 @@ def _labels(text, errors):
     return labels
 
 
-def parse_form(form, old, errors):
-    """Options from the firewall form (old: options of the stored firewall)."""
+def parse_form(form, old, errors, backup=False):
+    """Options from the firewall form (old: options of the stored firewall).
+
+    backup: gateway analysed from a configuration file (no API: no interfaces, timeout, hit counters
+    or schedule).
+    """
     from pyfrc2g.config import parse_duration
 
     values = {key: form.get(key, DEFAULTS[key]) for key in CHOICES}
@@ -132,6 +137,12 @@ def parse_form(form, old, errors):
     evidence = form.get("ciso_evidence_id", "").strip()
     if evidence and not _ID.match(evidence):
         errors.append("CISO Assistant evidence id: letters, digits, '-', '_', '.' or ':' only.")
+    folder = form.get("ciso_folder_id", "").strip()
+    if folder and not _ID.match(folder):
+        errors.append("CISO Assistant folder id: letters, digits, '-', '_', '.' or ':' only.")
+    changes_evidence = form.get("ciso_changes_evidence_id", "").strip()
+    if changes_evidence and not _ID.match(changes_evidence):
+        errors.append("CISO Assistant change report evidence id: letters, digits, '-', '_', '.' or ':' only.")
     tags = list(dict.fromkeys(split_list(form.get("tags", ""))))
     if any(not _TAG.match(t) for t in tags):
         errors.append("Tags: letters, digits, spaces, '.', ':', '_' or '-' (32 characters max).")
@@ -142,7 +153,7 @@ def parse_form(form, old, errors):
         detected_interfaces=old.get("detected_interfaces") or [],
         interface_labels=_labels(form.get("interface_labels", ""), errors),
         nat=form.get("nat") == "1",
-        hits=form.get("hits") == "1",
+        hits=old.get("hits", True) if backup else form.get("hits") == "1",
         wan_interfaces=wan,
         admin_ports=ports(form.get("admin_ports"), "Administration ports", errors),
         sensitive_ports=ports(form.get("sensitive_ports"), "Sensitive ports", errors),
@@ -151,6 +162,8 @@ def parse_form(form, old, errors):
         schedule=schedule if values["schedule_mode"] == "custom" else "",
         retention=_number(form.get("retention"), "Analyses kept", errors, 1, 500),
         ciso_evidence_id=evidence,
+        ciso_folder_id=folder,
+        ciso_changes_evidence_id=changes_evidence,
         raster=form.get("raster") == "1",
         excel=form.get("excel") == "1",
         svg=form.get("svg") == "1",
@@ -159,6 +172,8 @@ def parse_form(form, old, errors):
         owner=form.get("owner", "").strip()[:64],
         tags=tags,
     )
+    if backup:
+        values.update(interfaces=[], interface_labels={}, timeout=None, schedule_mode="manual", schedule="")
     return values
 
 
@@ -175,10 +190,17 @@ def target(firewall, opts):
               "timeout": opts["timeout"], "interface_labels": opts["interface_labels"],
               "wan_interfaces": opts["wan_interfaces"], "admin_ports": opts["admin_ports"],
               "sensitive_ports": opts["sensitive_ports"], "unused_days": opts["unused_days"],
-              "meta": meta(opts)}
+              "nfsensei_config": opts["nfsensei_config"], "meta": meta(opts)}
     if opts["hits"] and firewall["type"] == "pfsense":
         result["hits"] = "api"
     return result
+
+
+def backup_target(opts):
+    """Engine target of a gateway analysed from a configuration file (overrides only)."""
+    return {"wan_interfaces": opts["wan_interfaces"], "admin_ports": opts["admin_ports"],
+            "sensitive_ports": opts["sensitive_ports"], "unused_days": opts["unused_days"],
+            "meta": meta(opts)}
 
 
 def meta(opts):
@@ -206,13 +228,20 @@ def arguments(opts, firewall_type, settings):
     return args
 
 
-def policy_text(opts, settings):
-    """Compliance policy (YAML) applied to this firewall ('' = none)."""
+def policy_texts(opts, settings):
+    """
+    Compliance policies (YAML texts) applied to this firewall: the global one (or its own),
+    then those of its site and of each of its tags (Administration > Policies). "No policy" = none.
+    """
     if opts["policy_mode"] == "none":
-        return ""
-    if opts["policy_mode"] == "own":
-        return opts["policy"]
-    return settings.get("policy") or ""
+        return []
+    base = opts["policy"] if opts["policy_mode"] == "own" else settings.get("policy") or ""
+    texts = [base] if base.strip() else []
+    for scoped in settings.get("scoped_policies") or []:
+        wanted = opts["site"] if scoped.get("kind") == "site" else opts["tags"]
+        if scoped.get("name") and scoped["name"] in ([wanted] if isinstance(wanted, str) else wanted):
+            texts.append(scoped.get("policy") or "")
+    return texts
 
 
 def schedule_interval(opts, settings):

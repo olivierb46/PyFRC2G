@@ -1,0 +1,10 @@
+# Accepted risks: justified findings, left out of the audit findings and of the risk score.
+# They are listed apart (section "Accepted risks" of the PDF, HTML and Excel reports, <FW>_ACCEPTED.csv)
+# with their justification. Usage: pyfrc2g --backup config.xml --exceptions exceptions.yml
+exceptions:
+  - check: ANY_ANY            # check of the finding (see <FW>_AUDIT.csv, column CHECK; POLICY:<id> for a policy)
+    rule: "ipt-10f446311933"  # optional: RULE ID (or rule summary); empty = every rule raising this check
+    gateway: fw-paris         # optional: firewall name; empty = every firewall
+    reason: Legacy VPN concentrator, replaced in Q3   # required
+    owner: network team       # optional
+    expires: 2026-12-31       # optional (YYYY-MM-DD): after this date the finding counts again

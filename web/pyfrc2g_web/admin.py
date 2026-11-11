@@ -25,7 +25,7 @@ from pyfrc2g_web.security import admin_required
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
-FIREWALL_TYPES = (("pfsense", "pfSense (REST API v2)"), ("opnsense", "OPNsense"))
+FIREWALL_TYPES = (("pfsense", "pfSense (REST API v2)"), ("opnsense", "OPNsense"), ("nfsensei", "nfSensei"))
 SECRET_FIELDS = ("token", "key", "secret")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 
@@ -78,8 +78,8 @@ def _firewall_form(existing=None):
     config.update(fwopts.parse_form(form, old_options, errors))
     if config["ca_pem"] and "BEGIN CERTIFICATE" not in config["ca_pem"]:
         errors.append("CA certificate must be in PEM format (-----BEGIN CERTIFICATE-----).")
-    if gateway_type == "pfsense" and not config["token"]:
-        errors.append("pfSense needs an API key (token).")
+    if gateway_type in ("pfsense", "nfsensei") and not config["token"]:
+        errors.append(f"{'pfSense' if gateway_type == 'pfsense' else 'nfSensei'} needs an API key.")
     if gateway_type == "opnsense" and not (config["key"] and config["secret"]):
         errors.append("OPNsense needs an API key and secret.")
     return name, gateway_type, form.get("enabled") == "1", config, errors
@@ -121,8 +121,8 @@ def firewall(firewall_id=None):
         if not errors:
             saved = db().save_firewall(firewall_id, name, gateway_type, enabled, config)
             gateway = _gateway_of(saved)
-            if gateway:  # The evidence id of the firewall is also the one of its analyses.
-                db().set_gateway_evidence(gateway["id"], config["ciso_evidence_id"])
+            if gateway:  # The evidence / folder ids of the firewall are also the ones of its analyses.
+                db().set_gateway_evidence(gateway["id"], config["ciso_evidence_id"], config["ciso_folder_id"])
             db().add_event(g.user["username"], "firewall updated" if firewall_id else "firewall added", name)
             if request.form.get("analyse") == "1" and enabled:
                 flash(f"Firewall {name} saved (credentials encrypted).", "ok")
@@ -186,9 +186,11 @@ def settings():
         try:
             retention = max(1, min(500, int(form.get("retention", "30"))))
             unused_days = max(1, int(form.get("unused_days", "30")))
+            parallel_fetch = max(1, min(16, int(form.get("parallel_fetch", "4"))))
         except ValueError:
-            errors.append("Retention and unused days must be numbers.")
+            errors.append("Retention, unused days and parallel readings must be numbers.")
             retention, unused_days = values["retention"], values["unused_days"]
+            parallel_fetch = values["parallel_fetch"]
         policy = form.get("policy", "")
         if policy.strip():
             try:
@@ -197,6 +199,7 @@ def settings():
                 errors.append(f"Compliance policy: {e}")
         new = {
             "schedule": schedule, "retention": retention, "unused_days": unused_days,
+            "parallel_fetch": parallel_fetch,
             "wan_interfaces": [i.strip() for i in form.get("wan_interfaces", "").split(",") if i.strip()] or ["wan"],
             "admin_ports": ports(form.get("admin_ports", ""), "Administration ports", errors),
             "sensitive_ports": ports(form.get("sensitive_ports", ""), "Sensitive ports", errors),
@@ -239,7 +242,7 @@ def policy_example():
 # ---------------------------------------------------------------------------
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
-CISO_FIELDS = ("ciso_url", "ciso_folder_id", "ciso_evidence_id", "ciso_observation")
+CISO_FIELDS = ("ciso_url", "ciso_folder_id", "ciso_evidence_id", "ciso_changes_evidence_id", "ciso_observation")
 
 
 def _ciso_form(current):
@@ -250,12 +253,23 @@ def _ciso_form(current):
     values["ciso_enabled"] = form.get("ciso_enabled") == "1"
     values["ciso_auto"] = form.get("ciso_auto") == "1"
     values["ciso_verify_ssl"] = form.get("ciso_verify_ssl") == "1"
+    values["ciso_changes"] = form.get("ciso_changes") == "1"
+    values["ciso_site_folders"] = {}
+    for line in form.get("ciso_site_folders", "").splitlines():
+        if not line.strip():
+            continue
+        site, sep, folder = (part.strip() for part in line.partition("="))
+        if not sep or not site or len(site) > 64 or not _ID.match(folder):
+            errors.append(f"Folder per site: '{line.strip()}' is not 'site=folder id'.")
+        else:
+            values["ciso_site_folders"][site] = folder
     values["ciso_token"] = form.get("ciso_token", "").strip() or current.get("ciso_token", "")
     pem = form.get("ciso_ca_pem", "").strip()
     values["ciso_ca_pem"] = pem or ("" if form.get("ciso_ca_clear") else current.get("ciso_ca_pem", ""))
     if values["ciso_url"] and not re.match(r"^https?://[^\s/]+", values["ciso_url"]):
         errors.append("URL must start with https:// (or http://).")
-    for key, label in (("ciso_folder_id", "Folder id"), ("ciso_evidence_id", "Default evidence id")):
+    for key, label in (("ciso_folder_id", "Folder id"), ("ciso_evidence_id", "Default evidence id"),
+                       ("ciso_changes_evidence_id", "Change report evidence id")):
         if values[key] and not _ID.match(values[key]):
             errors.append(f"{label}: letters, digits, '-', '_', '.' or ':' only.")
     if values["ciso_ca_pem"] and "BEGIN CERTIFICATE" not in values["ciso_ca_pem"]:
@@ -267,7 +281,9 @@ def _ciso_form(current):
 
 def _ciso_view(values):
     view = {key: values.get(key, "") for key in CISO_FIELDS}
-    view.update(enabled=values.get("ciso_enabled"), auto=values.get("ciso_auto"),
+    view.update(site_folders="\n".join(f"{site}={folder}" for site, folder in
+                                       (values.get("ciso_site_folders") or {}).items()),
+                changes=values.get("ciso_changes"), enabled=values.get("ciso_enabled"), auto=values.get("ciso_auto"),
                 verify_ssl=values.get("ciso_verify_ssl", True), has_token=bool(values.get("ciso_token")),
                 has_ca=bool(values.get("ciso_ca_pem")))
     return view
@@ -368,3 +384,98 @@ def update_user(user_id):
 @admin_required
 def events():
     return render_template("admin/events.html", events=db().events())
+
+
+# ---------------------------------------------------------------------------
+# Compliance policies per site / tag
+# ---------------------------------------------------------------------------
+
+_SCOPE_NAME = re.compile(r"^[\w .:-]{1,64}$", re.UNICODE)
+
+
+def _scope_choices():
+    """Sites and tags already used by the firewalls (suggestions)."""
+    from pyfrc2g_web import ciso
+
+    sites, tags = set(), set()
+    for gw in db().gateways():
+        opts = ciso.options_of(db(), gw)
+        if opts["site"]:
+            sites.add(opts["site"])
+        tags.update(opts["tags"])
+    return sorted(sites), sorted(tags)
+
+
+@bp.route("/policies", methods=["GET", "POST"])
+@admin_required
+def policies():
+    from pyfrc2g.analysis.policy import PolicyError, parse_policy
+
+    items = list(db().settings().get("scoped_policies") or [])
+    if request.method == "POST":
+        form = request.form
+        index = form.get("index", type=int)
+        if form.get("action") == "delete":
+            if index is not None and 0 <= index < len(items):
+                removed = items.pop(index)
+                db().save_settings({"scoped_policies": items})
+                db().add_event(g.user["username"], "scoped policy deleted", f"{removed['kind']} {removed['name']}")
+                flash("Policy deleted.", "ok")
+            return redirect(url_for("admin.policies"))
+        kind, name, text = form.get("kind", ""), form.get("name", "").strip(), form.get("policy", "")
+        error = None
+        if kind not in ("site", "tag"):
+            error = "Choose site or tag."
+        elif not _SCOPE_NAME.match(name):
+            error = "Name: letters, digits, spaces, '.', ':', '_' or '-' (64 characters max)."
+        elif not text.strip():
+            error = "Paste a policy."
+        else:
+            try:
+                count = len(parse_policy(text))
+            except PolicyError as e:
+                error = f"Policy: {e}"
+        if error:
+            flash(error, "error")
+        else:
+            entry = {"kind": kind, "name": name, "policy": text}
+            if index is not None and 0 <= index < len(items):
+                items[index] = entry
+            else:
+                items.append(entry)
+            db().save_settings({"scoped_policies": items})
+            db().add_event(g.user["username"], "scoped policy saved", f"{kind} {name}")
+            flash(f"Policy for {kind} {name} saved: {count} rule(s).", "ok")
+            return redirect(url_for("admin.policies"))
+    sites, tags = _scope_choices()
+    return render_template("admin/policies.html", items=items, sites=sites, tags=tags)
+
+
+# ---------------------------------------------------------------------------
+# Accepted risks
+# ---------------------------------------------------------------------------
+
+@bp.route("/exceptions")
+@admin_required
+def exceptions():
+    from datetime import date
+
+    return render_template("admin/exceptions.html", items=db().exceptions(), today=date.today().isoformat())
+
+
+@bp.route("/exceptions/<int:exception_id>/delete", methods=["POST"])
+@admin_required
+def delete_exception(exception_id):
+    from pyfrc2g_web import exceptions as accepted
+
+    item = next((e for e in db().exceptions() if e["id"] == exception_id), None)
+    if item is None:
+        abort(404)
+    db().delete_exception(exception_id)
+    accepted.refresh(db(), None if not item["gateway"] else {item["gateway"]})
+    db().add_event(g.user["username"], "accepted risk removed", f"{item['check_name']} {item['gateway'] or '(all)'}")
+    run_id = accepted.regenerate(current_app, db(), None if not item["gateway"] else {item["gateway"]},
+                                 g.user["id"])
+    flash("Accepted risk removed: the finding counts again."
+          + (" The PDF, HTML and Excel reports are being regenerated." if run_id else ""), "ok")
+    return redirect(url_for("main.run", run_id=run_id) if run_id else url_for("admin.exceptions"))

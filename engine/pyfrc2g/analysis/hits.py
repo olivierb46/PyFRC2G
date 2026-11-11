@@ -95,6 +95,9 @@ def missing_counters_note(gateway_type, from_api, source=None, counters=None):
     pfSense has no counters in its configuration backup nor in the REST API rule endpoints:
     they come from "pfctl -vvsr", read through the API command prompt (opt-in) or from a file.
     """
+    if gateway_type == "nfsensei":
+        return ("nfSensei only counts the rules that have counters enabled (/api/v1/firewall/stats, "
+                "'counted': true): none of the rules analysed does, so their usage is unknown.")
     if counters:
         return ("Hit counters were read but no rule matched them: the counters are keyed by the "
                 "rule tracker (pfSense) / uuid (OPNsense) of the current ruleset.")

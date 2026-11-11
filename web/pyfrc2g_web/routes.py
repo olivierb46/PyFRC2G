@@ -83,17 +83,18 @@ def health():
 # Dashboard
 # ---------------------------------------------------------------------------
 
-@bp.route("/")
-@login_required
-def dashboard():
+def _filtered_gateways():
+    """Gateways (with site, tags, description) matching the site / tag filters of the query string."""
     from pyfrc2g_web import fwopts
 
     firewalls = db().firewalls()
     labels = {f["id"]: fwopts.options(f) for f in firewalls}
     gateways = db().gateways()
     for gw in gateways:
-        opts = labels.get(gw["firewall_id"]) or {}
-        gw.update(site=opts.get("site", ""), tags=opts.get("tags", []), description=opts.get("description", ""))
+        opts = labels.get(gw["firewall_id"]) or (
+            fwopts.options({"config": gw["options"]}) if gw.get("options") is not None else {})
+        gw.update(site=opts.get("site", ""), tags=opts.get("tags", []), description=opts.get("description", ""),
+                  owner=opts.get("owner", ""))
     sites = sorted({gw["site"] for gw in gateways if gw["site"]})
     tags = sorted({tag for gw in gateways for tag in gw["tags"]})
     site, tag = request.args.get("site", ""), request.args.get("tag", "")
@@ -101,6 +102,13 @@ def dashboard():
         gateways = [gw for gw in gateways if gw["site"] == site]
     if tag:
         gateways = [gw for gw in gateways if tag in gw["tags"]]
+    return firewalls, gateways, sites, tags, site, tag
+
+
+@bp.route("/")
+@login_required
+def dashboard():
+    firewalls, gateways, sites, tags, site, tag = _filtered_gateways()
     for gw in gateways:
         gw["history"] = db().score_history(gw["id"])
     runs = db().runs(limit=8)
@@ -166,12 +174,20 @@ def gateway(name):
     if tab not in dict(TABS):
         tab = "overview"
     analyses, analysis = _selected_analysis(gw)
+    if analysis:  # Expired accepted risks count again as soon as they expire.
+        from pyfrc2g_web import exceptions as accepted
+
+        accepted.apply(analysis["data"], db().exceptions(), gw["name"])
     artifacts = _classify(db().artifacts(analysis["id"]), gw["name"]) if analysis else None
     from pyfrc2g_web import ciso
 
     settings = db().settings()
+    opts = ciso.options_of(db(), gw)
     ciso_info = {"configured": ciso.configured(settings), "auto": settings.get("ciso_auto"),
                  "evidence": ciso.evidence_for(settings, gw), "own": gw.get("ciso_evidence_id") or "",
+                 "folder": ciso.folder_for(settings, gw, opts["site"]), "own_folder": gw.get("ciso_folder_id") or "",
+                 "folder_origin": ciso.folder_origin(settings, gw, opts["site"]), "site": opts["site"],
+                 "changes": ciso.changes_evidence_for(settings, opts),
                  "uploads": db().ciso_uploads(gateway=gw["name"], limit=20)}
     return render_template("gateway.html", gw=gw, tab=tab, tabs=TABS, analyses=analyses, analysis=analysis,
                            ciso=ciso_info,
@@ -201,6 +217,49 @@ def artifact(name, analysis_id, filename):
     elif mime == "text/csv" and inline:
         response.mimetype = "text/plain"
     return response
+
+
+@bp.route("/firewalls/<name>/accept", methods=["POST"])
+@admin_required
+def accept_finding(name):
+    """Accept a finding of the Audit tab (justification, owner, optional expiry)."""
+    import re
+    from datetime import date
+
+    from pyfrc2g_web import exceptions as accepted
+
+    gw = _gateway_or_404(name)
+    analysis = db().analysis(request.form.get("analysis_id", type=int) or 0)
+    if analysis is None or analysis["gateway_id"] != gw["id"]:
+        abort(404)
+    data = accepted.apply(analysis["data"], db().exceptions(), gw["name"])
+    index = request.form.get("finding", type=int)
+    if index is None or not 0 <= index < len(data["audit"]):
+        flash("Choose the finding to accept.", "error")
+        return redirect(url_for("main.gateway", name=name, tab="audit"))
+    finding = data["audit"][index]
+    reason = request.form.get("reason", "").strip()
+    owner = request.form.get("owner", "").strip()[:64]
+    expires = request.form.get("expires", "").strip()
+    if not reason or len(reason) > 500:
+        flash("Give the justification (500 characters max).", "error")
+    elif expires and (not re.match(r"^\d{4}-\d{2}-\d{2}$", expires) or expires < date.today().isoformat()):
+        flash("Expiry: a future date (YYYY-MM-DD), or empty for no expiry.", "error")
+    else:
+        scope = request.form.get("scope", "rule")
+        everywhere = request.form.get("where") == "all"
+        key = accepted.rule_key(finding) if scope == "rule" else ""
+        db().add_exception(None if everywhere else name, finding["CHECK"], key, reason, owner, expires,
+                           g.user["username"])
+        accepted.refresh(db(), None if everywhere else {name})
+        db().add_event(g.user["username"], "risk accepted",
+                       f"{finding['CHECK']} on {'all firewalls' if everywhere else name}")
+        run_id = accepted.regenerate(current_app, db(), None if everywhere else {name}, g.user["id"])
+        flash("Risk accepted: the finding no longer counts in the score."
+              + (" The PDF, HTML and Excel reports are being regenerated." if run_id else ""), "ok")
+        if run_id:
+            return redirect(url_for("main.run", run_id=run_id))
+    return redirect(url_for("main.gateway", name=name, tab="audit"))
 
 
 @bp.route("/firewalls/<name>/ciso", methods=["POST"])
@@ -234,18 +293,56 @@ def ciso_evidence(name):
 
     gw = _gateway_or_404(name)
     evidence = request.form.get("evidence_id", "").strip()
-    if evidence and not re.match(r"^[A-Za-z0-9._:-]{1,64}$", evidence):
-        flash("Evidence id: letters, digits, '-', '_', '.' or ':' only.", "error")
+    folder = request.form.get("folder_id", "").strip()
+    if any(value and not re.match(r"^[A-Za-z0-9._:-]{1,64}$", value) for value in (evidence, folder)):
+        flash("Evidence and folder ids: letters, digits, '-', '_', '.' or ':' only.", "error")
     else:
-        db().set_gateway_evidence(gw["id"], evidence)
         firewall = db().firewall(gw["firewall_id"]) if gw.get("firewall_id") else None
-        if firewall:  # API firewall: its settings hold the evidence used by the next analyses.
-            firewall["config"]["ciso_evidence_id"] = evidence
+        if firewall:  # API firewall: its settings hold the ids used by the next analyses.
+            firewall["config"].update(ciso_evidence_id=evidence, ciso_folder_id=folder)
             db().save_firewall(firewall["id"], firewall["name"], firewall["type"], firewall["enabled"],
                                firewall["config"])
-        db().add_event(g.user["username"], "CISO Assistant evidence set", f"{name}: {evidence or '(default)'}")
-        flash(f"CISO Assistant evidence of {name}: {evidence or 'default one'}.", "ok")
+            db().set_gateway_evidence(gw["id"], evidence, folder)
+        elif gw.get("options") is not None:  # Configuration file with its own settings.
+            db().set_gateway_options(gw["id"], dict(gw["options"], ciso_evidence_id=evidence,
+                                                    ciso_folder_id=folder))
+        else:
+            db().set_gateway_evidence(gw["id"], evidence, folder)
+        db().add_event(g.user["username"], "CISO Assistant evidence set",
+                       f"{name}: evidence {evidence or '(default)'}, folder {folder or '(default)'}")
+        flash(f"CISO Assistant of {name}: evidence {evidence or 'default'}, folder {folder or 'default'}.", "ok")
     return redirect(url_for("main.gateway", name=name, tab="files"))
+
+
+@bp.route("/firewalls/<name>/settings", methods=["GET", "POST"])
+@admin_required
+def gateway_settings(name):
+    """Own settings of a gateway analysed from a configuration file (backup)."""
+    from pyfrc2g_web import fwopts
+
+    gw = _gateway_or_404(name)
+    if gw["kind"] != "upload":
+        if gw.get("firewall_id"):
+            return redirect(url_for("admin.firewall", firewall_id=gw["firewall_id"]))
+        abort(404)
+    old = fwopts.options({"config": gw.get("options") or {}})
+    errors = []
+    if request.method == "POST":
+        values = fwopts.parse_form(request.form, old, errors, backup=True)
+        if not errors:
+            db().set_gateway_options(gw["id"], values)
+            db().add_event(g.user["username"], "gateway settings updated", name)
+            if request.form.get("analyse") == "1" and gw.get("upload_id"):
+                flash(f"Settings of {name} saved.", "ok")
+                run_id = current_app.runner.submit("upload", f"Analysis of {name}",
+                                                   [{"kind": "upload", "upload_id": gw["upload_id"]}], g.user["id"])
+                return redirect(url_for("main.run", run_id=run_id))
+            flash(f"Settings of {name} saved: they apply to the next analysis of its configuration file.", "ok")
+            return redirect(url_for("main.gateway", name=name))
+        for error in errors:
+            flash(error, "error")
+        old = dict(old, **{k: v for k, v in values.items()})
+    return render_template("gateway_settings.html", gw=gw, o=old, settings=db().settings())
 
 
 @bp.route("/firewalls/<name>/delete", methods=["POST"])
@@ -261,6 +358,21 @@ def delete_gateway(name):
 # ---------------------------------------------------------------------------
 # Uploads and runs
 # ---------------------------------------------------------------------------
+
+def _upload_hints(form):
+    """Name, site and CISO Assistant ids given with an uploaded file -> ({key: value}, error)."""
+    import re
+
+    hints = {key: form.get(key, "").strip() for key in ("name", "site", "ciso_folder_id", "ciso_evidence_id")}
+    if hints["name"] and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$", hints["name"]):
+        return {}, "Firewall name: letters, digits, '.', '_' or '-' (64 characters max)."
+    if len(hints["site"]) > 64:
+        return {}, "Site: 64 characters max."
+    for key in ("ciso_folder_id", "ciso_evidence_id"):
+        if hints[key] and not re.match(r"^[A-Za-z0-9._:-]{1,64}$", hints[key]):
+            return {}, "CISO Assistant ids: letters, digits, '-', '_', '.' or ':' only."
+    return {key: value for key, value in hints.items() if value}, None
+
 
 @bp.route("/uploads", methods=["GET", "POST"])
 @login_required
@@ -281,12 +393,24 @@ def uploads():
         if not content:
             flash("The file is empty.", "error")
             return redirect(url_for("main.uploads"))
-        upload_id = db().add_upload(g.user["id"], file.filename, fmt, content)
-        db().add_event(g.user["username"], "upload", f"{file.filename} ({len(content)} bytes)")
-        run_id = current_app.runner.submit("upload", f"Analysis of {file.filename}",
-                                           [{"kind": "upload", "upload_id": upload_id}], g.user["id"])
+        from pyfrc2g_web import jobs
+
+        filename, content = jobs.slim_upload(file.filename, content)
+        hints, problem = _upload_hints(request.form)
+        if problem:
+            flash(problem, "error")
+            return redirect(url_for("main.uploads"))
+        upload_id = db().add_upload(g.user["id"], filename, fmt, content)
+        db().add_event(g.user["username"], "upload", f"{filename} ({len(content)} bytes)"
+                       + (f", extracted from {file.filename}" if filename != file.filename else ""))
+        run_id = current_app.runner.submit("upload", f"Analysis of {hints.get('name') or filename}",
+                                           [{"kind": "upload", "upload_id": upload_id, **hints}], g.user["id"])
         return redirect(url_for("main.run", run_id=run_id))
-    return render_template("uploads.html", uploads=db().uploads(), formats=FORMATS)
+    from pyfrc2g_web import ciso
+
+    settings = db().settings()
+    return render_template("uploads.html", uploads=db().uploads(), formats=FORMATS,
+                           sites=sorted(settings.get("ciso_site_folders") or {}), ciso=ciso.configured(settings))
 
 
 @bp.route("/uploads/<int:upload_id>/analyse", methods=["POST"])
@@ -315,6 +439,117 @@ def analyse():
                                        g.user["id"])
     db().add_event(g.user["username"], "analysis started", label)
     return redirect(url_for("main.run", run_id=run_id))
+
+
+# ---------------------------------------------------------------------------
+# Comparison of two analyses
+# ---------------------------------------------------------------------------
+
+def _compare_side(value):
+    """'firewall|analysis id' (or 'firewall' = latest analysis) -> (gateway, analysis) or (None, None)."""
+    name, _, analysis_id = (value or "").partition("|")
+    gw = next((x for x in db().gateways() if x["name"] == name), None)
+    if gw is None:
+        return None, None
+    analyses = db().analyses(gw["id"])
+    wanted = int(analysis_id) if analysis_id.isdigit() else None
+    chosen = next((a for a in analyses if a["id"] == wanted), analyses[0] if analyses else None)
+    return gw, (db().analysis(chosen["id"]) if chosen else None)
+
+
+def _finding_keys(data):
+    return {(f["CHECK"], f["RULE"]): f for f in data.get("audit") or []}
+
+
+@bp.route("/compare")
+@login_required
+def compare():
+    from pyfrc2g.analysis.compare import compare_nat, compare_rules
+
+    from pyfrc2g_web import exceptions as accepted
+
+    choices = []
+    for gw in db().gateways():
+        choices.append({"name": gw["name"], "analyses": db().analyses(gw["id"])})
+    gw_a, analysis_a = _compare_side(request.args.get("a"))
+    gw_b, analysis_b = _compare_side(request.args.get("b"))
+    result = None
+    if analysis_a and analysis_b:
+        exceptions = db().exceptions()
+        a, b = (accepted.apply(x["data"], exceptions, gw["name"]) for x, gw in
+                ((analysis_a, gw_a), (analysis_b, gw_b)))
+        diff = compare_rules(a.get("rules") or [], b.get("rules") or []) + \
+            compare_nat(a.get("nat") or [], b.get("nat") or [])
+        keys_a, keys_b = _finding_keys(a), _finding_keys(b)
+        findings = [dict(f, DIFFERENCE="ONLY IN A") for k, f in keys_a.items() if k not in keys_b] + \
+                   [dict(f, DIFFERENCE="ONLY IN B") for k, f in keys_b.items() if k not in keys_a]
+        counts = {}
+        for item in diff:
+            counts[item["DIFFERENCE"]] = counts.get(item["DIFFERENCE"], 0) + 1
+        result = {"a": a, "b": b, "diff": diff, "findings": findings, "counts": counts,
+                  "label_a": f"{gw_a['name']} #{analysis_a['id']}", "label_b": f"{gw_b['name']} #{analysis_b['id']}"}
+    return render_template("compare.html", choices=choices, result=result,
+                           a=f"{gw_a['name']}|{analysis_a['id']}" if analysis_a else request.args.get("a", ""),
+                           b=f"{gw_b['name']}|{analysis_b['id']}" if analysis_b else request.args.get("b", ""))
+
+
+# ---------------------------------------------------------------------------
+# Export of the dashboard (Excel / PDF), same site / tag filters
+# ---------------------------------------------------------------------------
+
+@bp.route("/export.<fmt>")
+@login_required
+def export(fmt):
+    from datetime import datetime
+
+    from pyfrc2g_web import exceptions as accepted
+    from pyfrc2g_web import exports
+
+    if fmt not in ("xlsx", "pdf"):
+        abort(404)
+    _, gateways, _, _, site, tag = _filtered_gateways()
+    exceptions = db().exceptions()
+    items = []
+    for gw in gateways:
+        analyses = db().analyses(gw["id"])
+        data = accepted.apply(db().analysis(analyses[0]["id"])["data"], exceptions, gw["name"]) if analyses else None
+        items.append({"gateway": gw, "data": data})
+    scope = " · ".join(part for part in (f"site {site}" if site else "", f"tag {tag}" if tag else "") if part)
+    content, mime = exports.build(fmt, items, scope or "all firewalls")
+    db().add_event(g.user["username"], "export", f"{fmt} {scope or 'all firewalls'}")
+    response = Response(content, mimetype=mime)
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="pyfrc2g-report-{datetime.now():%Y%m%d}.{fmt}"')
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Documentation (HOW_IT_WORKS.md of the repository, copied in docs/)
+# ---------------------------------------------------------------------------
+
+def _render_doc():
+    """(html, table of contents) of docs/how-it-works.md. Relative links (repository files) become code."""
+    import os
+    import re
+
+    import markdown
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "how-it-works.md")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    md = markdown.Markdown(extensions=["tables", "fenced_code", "toc"], extension_configs={"toc": {"toc_depth": "2"}})
+    html = md.convert(text)
+    html = re.sub(r'<a href="(?!https?://|#)[^"]*">(.*?)</a>', r"\1", html)
+    html = html.replace("<table>", '<div class="table-wrap"><table>').replace("</table>", "</table></div>")
+    toc = [{"id": t["id"], "name": t["name"]} for top in md.toc_tokens for t in top["children"]]
+    return html, toc
+
+
+@bp.route("/help")
+@login_required
+def help_page():
+    html, toc = _render_doc()
+    return render_template("help.html", doc=html, toc=toc)
 
 
 @bp.route("/runs")

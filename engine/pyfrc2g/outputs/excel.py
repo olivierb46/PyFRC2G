@@ -6,6 +6,7 @@ sheets, with filters, frozen header and colored rows.
 import logging
 
 from pyfrc2g.analysis.audit import AUDIT_FIELDNAMES, SEVERITIES, count_by_severity
+from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.changes import CHANGES_FIELDNAMES, count_changes
 from pyfrc2g.analysis.hits import HITS_FIELDNAMES
 from pyfrc2g.analysis.matrix import STATUS_COLORS
@@ -73,6 +74,8 @@ def write_xlsx_report(report, path, rule_fieldnames):
     summary.append([])
     sev = count_by_severity(report.audit)
     summary.append(["Audit"] + [f"{s}: {sev[s]}" for s in SEVERITIES])
+    if report.accepted:
+        summary.append(["Accepted risks", len(report.accepted)])
     if report.changes is not None:
         cc = count_changes(report.changes)
         summary.append(["Changes"] + [f"{k.title()}: {v}" for k, v in cc.items()])
@@ -91,6 +94,9 @@ def write_xlsx_report(report, path, rule_fieldnames):
                            else ACTION_COLORS.get((r.get("ACTION") or "").lower())))
     _xlsx_sheet(wb, "Audit", AUDIT_FIELDNAMES, report.audit,
                 lambda r: SEVERITY_COLORS.get(r.get("SEVERITY")))
+    if report.accepted:
+        _xlsx_sheet(wb, "Accepted risks", ACCEPTED_FIELDNAMES, report.accepted,
+                    lambda r: SEVERITY_COLORS.get(r.get("SEVERITY")))
     if report.changes is not None:
         _xlsx_sheet(wb, "Changes", CHANGES_FIELDNAMES, report.changes,
                     lambda r: CHANGE_COLORS.get(r.get("CHANGE")))

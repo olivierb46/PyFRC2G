@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Policies by site / tag{% endblock %}
+{% macro form(item, index) %}
+<form method="post">{{ csrf() }}<input type="hidden" name="index" value="{{ index if index is not none else '' }}">
+  <div class="grid cols-3">
+    <div><label>Applies to</label><select name="kind"><option value="site" {{ 'selected' if item and item.kind == 'site' }}>Site</option><option value="tag" {{ 'selected' if item and item.kind == 'tag' }}>Tag</option></select></div>
+    <div><label>Name of the site or tag</label><input type="text" name="name" list="scope-names" maxlength="64" value="{{ item.name if item else '' }}" required></div>
+  </div>
+  <label>Policy (YAML)</label>
+  <textarea class="tall" name="policy" spellcheck="false" placeholder="policies:&#10;  - id: no-rdp-from-wan&#10;    severity: CRITICAL&#10;    match: {interface: wan, action: pass, port: 3389}" required>{{ item.policy if item else '' }}</textarea>
+  <div class="form-actions"><button class="btn {{ 'secondary' if item }}">{{ 'Save' if item else 'Add the policy' }}</button>
+  {% if item %}<button class="btn danger" name="action" value="delete" data-confirm="Delete this policy?">Delete</button>{% endif %}</div>
+</form>
+{% endmacro %}
+{% block content %}
+<div class="page-head"><div><h1>Policies by site / tag</h1>
+<div class="sub">Added to the global policy (<a href="{{ url_for('admin.settings') }}">Settings</a>) of every firewall whose <b>Site</b> or one of whose <b>Tags</b> matches. A firewall set to “No policy” ignores all of them. Same format as the global policy: <a href="{{ url_for('admin.policy_example') }}" target="_blank" rel="noopener">commented example</a>.</div></div></div>
+<datalist id="scope-names">{% for s in sites %}<option value="{{ s }}">{% endfor %}{% for t in tags %}<option value="{{ t }}">{% endfor %}</datalist>
+{% for item in items %}
+<details class="card section"><summary><b>{{ item.kind|capitalize }} “{{ item.name }}”</b></summary>{{ form(item, loop.index0) }}</details>
+{% endfor %}
+<div class="card section"><h2>New policy</h2>{{ form(none, none) }}</div>
+{% endblock %}

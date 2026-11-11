@@ -9,6 +9,12 @@ __pycache__/
 
 # Outputs locales
 results/
+# Raw API samples of a firewall (rules, addresses): never commit them
+sortie.json
+nfsensei-probe*.json
+# Firewall backups (rules, API key hashes, certificates)
+backup-*.tar.gz
+backup-*.yaml
 output_*.csv
 
 # IDE

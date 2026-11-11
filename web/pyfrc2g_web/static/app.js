@@ -40,7 +40,7 @@
   if (type) {
     var toggle = function () {
       document.querySelectorAll("[data-type]").forEach(function (el) {
-        el.classList.toggle("hidden", el.dataset.type !== type.value);
+        el.classList.toggle("hidden", el.dataset.type.split(" ").indexOf(type.value) < 0);
       });
     };
     type.addEventListener("change", toggle);

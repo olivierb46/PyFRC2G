@@ -3,9 +3,9 @@
 # Usage: PYFRC2G_FIREWALLS_FILE=firewalls.yml pyfrc2g   (or mount it in Docker, see docker-compose.yml)
 # Secrets stay in the environment / .env file: "${NAME}" is replaced by the variable NAME.
 #
-# Keys: name, type (pfsense / opnsense), url, token (pfSense), key + secret (OPNsense),
+# Keys: name, type (pfsense / opnsense / nfsensei), url, token (pfSense, nfSensei API key), key + secret (OPNsense),
 #       interfaces (optional), verify_ssl / ca_bundle (optional), hits ("api" or a pfctl file),
-#       ciso_evidence_id (optional).
+#       ciso_evidence_id, ciso_folder_id (optional).
 
 firewalls:
   - name: fw-paris
@@ -21,3 +21,9 @@ firewalls:
     secret: "${FW_LYON_SECRET}"
     interfaces: [lan, opt1]
     ca_bundle: /config/internal-ca.pem
+
+  # nfSensei: read-only API key (X-API-Key). Only the rules with counters enabled have a usage.
+  # - name: fw-nfs
+  #   type: nfsensei
+  #   url: https://10.2.0.1
+  #   token: "${FW_NFS_KEY}"

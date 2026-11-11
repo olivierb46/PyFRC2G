@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyfrc2g"
-version = "2.2.0"  # keep in sync with pyfrc2g/__init__.py
+version = "2.3.0"  # keep in sync with pyfrc2g/__init__.py
 description = "Firewall rules to flow graphs, audit and compliance reports (pfSense, OPNsense, FortiGate, iptables, nftables, Stormshield)"
 readme = "README.md"
 license = { text = "MIT" }

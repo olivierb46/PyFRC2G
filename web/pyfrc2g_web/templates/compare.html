@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, data_table %}
+{% block title %}Compare{% endblock %}
+{% macro picker(name, current) %}
+<select id="{{ name }}" name="{{ name }}">{% for c in choices %}{% if c.analyses %}<optgroup label="{{ c.name }}">{% for an in c.analyses %}<option value="{{ c.name }}|{{ an.id }}" {{ 'selected' if current == c.name ~ '|' ~ an.id }}>#{{ an.id }} · {{ an.created }}{% if loop.first %} (latest){% endif %} · score {{ an.score }}</option>{% endfor %}</optgroup>{% endif %}{% endfor %}</select>
+{% endmacro %}
+{% block content %}
+<div class="page-head"><div><h1>Compare</h1>
+<div class="sub">Two firewalls (e.g. CARP primary / secondary, pre-production / production) or two analyses of the same firewall (before / after a change). Rules, NAT rules and findings.</div></div></div>
+<form class="card" method="get">
+  <div class="grid cols-2">
+    <div><label for="a">A (reference)</label>{{ picker("a", a) }}</div>
+    <div><label for="b">B (compared)</label>{{ picker("b", b) }}</div>
+  </div>
+  <div class="form-actions"><button class="btn">Compare</button></div>
+</form>
+{% if not choices %}<div class="card empty section">No firewall analysed yet.</div>{% endif %}
+{% if result %}
+<div class="grid cols-4 section">
+  <div class="card kpi"><span class="label">A · {{ result.label_a }}</span><span class="value">{{ result.a.risk.score if result.a.risk.score is not none else "—" }}</span><span class="muted small">{{ result.a.rules|length }} rules · {{ result.a.audit|length }} findings</span></div>
+  <div class="card kpi"><span class="label">B · {{ result.label_b }}</span><span class="value">{{ result.b.risk.score if result.b.risk.score is not none else "—" }}</span><span class="muted small">{{ result.b.rules|length }} rules · {{ result.b.audit|length }} findings</span></div>
+  <div class="card kpi"><span class="label">Differences</span><span class="value">{{ result.diff|length }}</span><span class="muted small">{{ result.counts.get("ONLY IN A", 0) }} only in A · {{ result.counts.get("ONLY IN B", 0) }} only in B · {{ result.counts.get("DIFFERENT", 0) }} different</span></div>
+  <div class="card kpi"><span class="label">Finding differences</span><span class="value">{{ result.findings|length }}</span></div>
+</div>
+<div class="section"><h2>Rules and NAT</h2>
+{% call(field, value) data_table("diff", ["DIFFERENCE", "KIND", "INTERFACE", "RULE ORDER", "ITEM", "DETAIL"], result.diff, empty="No difference: both rule sets are identical.") %}{% if field == "DIFFERENCE" %}{{ badge(value, {"ONLY IN A": "REMOVED", "ONLY IN B": "ADDED", "DIFFERENT": "MODIFIED"}[value]) }}{% else %}{{ value }}{% endif %}{% endcall %}</div>
+<div class="section"><h2>Findings</h2>
+{% call(field, value) data_table("fdiff", ["DIFFERENCE", "SEVERITY", "CHECK", "GATEWAY", "RULE", "DETAIL"], result.findings, empty="Same findings on both sides.") %}{% if field == "SEVERITY" %}{{ badge(value) }}{% elif field == "DIFFERENCE" %}{{ badge(value, "info") }}{% else %}{{ value }}{% endif %}{% endcall %}</div>
+{% endif %}
+{% endblock %}

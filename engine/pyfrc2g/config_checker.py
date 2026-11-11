@@ -35,13 +35,16 @@ def check_target(target):
     if ca_bundle and not os.path.isfile(ca_bundle):
         return [f"[{name}] CA bundle not found: {ca_bundle}"]
     gateway_type = (target.get("type") or "").strip().lower()
-    if gateway_type not in ("pfsense", "opnsense"):
-        return [f"[{name}] type must be 'pfsense' or 'opnsense' (got {gateway_type!r})"]
+    if gateway_type not in ("pfsense", "opnsense", "nfsensei"):
+        return [f"[{name}] type must be 'pfsense', 'opnsense' or 'nfsensei' (got {gateway_type!r})"]
 
     errors = []
     if _is_placeholder(target.get("url")):
         errors.append(f"[{name}] URL is not configured (PFS_BASE_URL / OPNS_BASE_URL or 'url')")
-    if gateway_type == "pfsense":
+    if gateway_type == "nfsensei":
+        if _is_placeholder(target.get("token")):
+            errors.append(f"[{name}] nfSensei API key is not configured ('token')")
+    elif gateway_type == "pfsense":
         if _is_placeholder(target.get("token")):
             errors.append(f"[{name}] pfSense API token is not configured (PFS_TOKEN or 'token')")
     else:

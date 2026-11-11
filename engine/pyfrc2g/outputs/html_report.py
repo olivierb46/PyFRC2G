@@ -6,6 +6,7 @@ comparison report. Light / dark theme follows the browser.
 import html
 
 from pyfrc2g.analysis.audit import AUDIT_FIELDNAMES, SEVERITIES, count_by_severity
+from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.changes import CHANGES_FIELDNAMES, count_changes
 from pyfrc2g.analysis.hits import HITS_FIELDNAMES
 from pyfrc2g.model.nat import NAT_FIELDNAMES
@@ -167,6 +168,12 @@ def write_html_report(report, path, rule_fieldnames):
         "<tr>" + "".join(f"<td>{_e(r[f])}</td>" for f in stats_fields) + "</tr>" for r in stats_rows)
     meta_html = "".join(f"<tr><th>{_e(k)}</th><td>{_e(v)}</td></tr>" for k, v in report.metadata())
 
+    accepted_link = f'<a href="#accepted">Accepted risks ({len(report.accepted)})</a>' if report.accepted else ""
+    accepted_html = (
+        "<h2 id='accepted'>Accepted risks</h2><p class='meta'>Justified risks, left out of the audit findings "
+        "and of the risk score.</p>"
+        + _html_table("accepted", ACCEPTED_FIELDNAMES, report.accepted, lambda r: r.get("SEVERITY", ""))
+        if report.accepted else "")
     title = f"Flow matrix - {report.gateway_name}"
     doc = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -176,7 +183,7 @@ def write_html_report(report, path, rule_fieldnames):
 <h1>{_e(title)}</h1>
 <div class="meta">{_e(report.gateway_type)} · generated {_e(report.generated_at)}</div>
 <nav><a href="#summary">Summary</a><a href="#rules">Rules ({len(report.rules)})</a>
-<a href="#audit">Audit ({len(report.audit)})</a>
+<a href="#audit">Audit ({len(report.audit)})</a>{accepted_link}
 <a href="#changes">Changes ({'-' if report.changes is None else len(report.changes)})</a>
 <a href="#matrix">Zone matrix</a>
 <a href="#hits">Rule usage ({len(report.hits)})</a>
@@ -193,6 +200,7 @@ def write_html_report(report, path, rule_fieldnames):
 {_html_table("rules", rule_fieldnames, report.rules, _rule_class)}
 <h2 id="audit">Audit findings</h2>
 {_html_table("audit", AUDIT_FIELDNAMES, report.audit, lambda r: r.get("SEVERITY", ""))}
+{accepted_html}
 <h2 id="changes">Changes since previous run</h2>
 {changes_html}
 <h2 id="matrix">Zone matrix</h2>

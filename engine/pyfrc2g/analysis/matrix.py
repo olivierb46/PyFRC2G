@@ -130,7 +130,7 @@ def _cell(rules, src_zone, dst_zone, dst_id=None, wan=frozenset()):
     return "BLOCKED", "default deny"
 
 
-PF_LIKE = ("pfsense", "opnsense", "fortigate")
+PF_LIKE = ("pfsense", "opnsense", "fortigate", "nfsensei")
 
 
 def rules_for_interface(rules, gateway_type, interface):
@@ -139,7 +139,7 @@ def rules_for_interface(rules, gateway_type, interface):
     if gateway_type == "opnsense":
         # Rows follow the real OPNsense evaluation order (sort_order), floating rules included.
         return sorted((r for r in rules if not r.ifaces or interface in r.ifaces), key=lambda r: r.seq)
-    if gateway_type == "fortigate":
+    if gateway_type in ("fortigate", "nfsensei"):
         # Policies are evaluated top-down whatever their interfaces: keep the global order.
         return sorted((r for r in rules if not r.ifaces or interface in r.ifaces), key=lambda r: r.seq)
     floating = [r for r in rules if r.floating and (not r.ifaces or interface in r.ifaces)]

@@ -10,7 +10,8 @@ rule_entries: dicts with action, interface, source, destination, protocol, desti
 
 Formats: pfsense / opnsense (config.xml), fortigate (full configuration backup),
 iptables (iptables-save / ip6tables-save output, -c for counters), nftables ("nft -j list
-ruleset" JSON), stormshield (filter slot file or extracted ConfigFiles directory, experimental).
+ruleset" JSON), stormshield (filter slot file or extracted ConfigFiles directory, experimental), nfsensei
+(running configuration, JSON or YAML).
 """
 
 import logging
@@ -18,13 +19,15 @@ import os
 
 from pyfrc2g import utils
 
-FORMATS = ("auto", "pfsense", "opnsense", "fortigate", "iptables", "nftables", "stormshield")
+FORMATS = ("auto", "pfsense", "opnsense", "fortigate", "iptables", "nftables", "stormshield", "nfsensei")
 
 
 def detect_format(path):
     """Guess the configuration format from the file content. Returns a FORMATS value or None."""
     if os.path.isdir(path):
-        return "stormshield"
+        from pyfrc2g.inputs.nfsensei import find_config_file
+
+        return "nfsensei" if find_config_file(path) else "stormshield"
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             head = f.read(65536)
@@ -35,6 +38,9 @@ def detect_format(path):
         return "xml"
     if stripped.startswith("{") and '"nftables"' in head:
         return "nftables"
+    if ('"schema_version"' in head and '"firewall"' in head) or \
+            ("schema_version:" in head and any(line.startswith("firewall:") for line in head.splitlines())):
+        return "nfsensei"
     if "config firewall policy" in head or head.startswith("#config-version=") \
             or "config system global" in head:
         return "fortigate"
@@ -74,10 +80,10 @@ def load_backup(path, fmt="auto"):
         logging.error(f"Unknown configuration format for {path} (use --format)")
         return None, [], None, None, []
 
-    from pyfrc2g.inputs import fortigate, iptables, nftables, stormshield
+    from pyfrc2g.inputs import fortigate, iptables, nfsensei, nftables, stormshield
 
-    parser = {"fortigate": fortigate.parse, "iptables": iptables.parse,
-              "nftables": nftables.parse, "stormshield": stormshield.parse}[detected]
+    parser = {"fortigate": fortigate.parse, "iptables": iptables.parse, "nftables": nftables.parse,
+              "stormshield": stormshield.parse, "nfsensei": nfsensei.parse}[detected]
     logging.info(f"Detected {detected} configuration, parsing...")
     try:
         maps, entries, name, nat = parser(path)

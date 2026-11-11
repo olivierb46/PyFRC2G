@@ -265,6 +265,8 @@ class APIClient:
             result = self._fetch_pfsense_aliases()
         elif gateway_type == "opnsense":
             result = self._fetch_opnsense_aliases()
+        elif gateway_type == "nfsensei":
+            result = self._fetch_nfsensei_aliases()
         else:
             logging.error(f"Unknown gateway type: {self.config.gateway_type}")
             return {}, {}, {}, {}
@@ -990,3 +992,12 @@ class APIClient:
         logging.warning(f"No valid interfaces auto-detected. Collected candidates were: {sorted(interfaces)}")
         logging.warning("Please manually specify interfaces in config: INTERFACES = ['wan', 'lan', 'opt1', ...]")
         return []
+
+
+def new_client(config):
+    """API client of the gateway type of the configuration (pfSense / OPNsense / nfSensei)."""
+    if (config.gateway_type or "").lower() == "nfsensei":
+        from pyfrc2g.inputs.nfsensei import NfSenseiClient
+
+        return NfSenseiClient(config)
+    return APIClient(config)

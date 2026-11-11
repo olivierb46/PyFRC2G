@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}How it works{% endblock %}
+{% block content %}
+<div class="doc-layout">
+  <nav class="card doc-toc" aria-label="Contents">
+    <h3>Contents</h3>
+    <ol>{% for item in toc %}<li><a href="#{{ item.id }}">{{ item.name|replace("&amp;", "&") }}</a></li>{% endfor %}</ol>
+  </nav>
+  <article class="card doc">{{ doc|safe }}</article>
+</div>
+{% endblock %}

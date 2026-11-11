@@ -45,17 +45,23 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS ciso_uploads (
     id INTEGER PRIMARY KEY, analysis_id INTEGER, gateway TEXT, time TEXT, evidence_id TEXT,
     ok INTEGER, username TEXT, message_enc BLOB);
+CREATE TABLE IF NOT EXISTS exceptions (
+    id INTEGER PRIMARY KEY, gateway TEXT, check_name TEXT NOT NULL, rule_key TEXT, reason_enc BLOB,
+    owner TEXT, expires TEXT, created TEXT, username TEXT);
 CREATE INDEX IF NOT EXISTS ciso_uploads_gateway ON ciso_uploads(gateway, id);
 """
 # Columns that update_run() may write (names are interpolated in the SQL).
 RUN_COLUMNS = frozenset({"kind", "label", "status", "user_id", "queued", "started", "finished",
                          "exit_code", "gateways", "log_enc"})
 # Columns added after the first release: (table, column, definition).
-MIGRATIONS = (("gateways", "ciso_evidence_id", "TEXT"),)
+MIGRATIONS = (("gateways", "ciso_evidence_id", "TEXT"), ("gateways", "ciso_folder_id", "TEXT"),
+              ("gateways", "options_enc", "BLOB"))
 
 DEFAULT_SETTINGS = {
     "schedule": "",
     "retention": 30,
+    # API firewalls read in parallel during one run (analyses and reports stay sequential).
+    "parallel_fetch": 4,
     "wan_interfaces": ["wan"],
     "admin_ports": [22, 23, 80, 443, 161, 3389, 5900, 8080, 8443, 10443],
     "sensitive_ports": [135, 139, 445, 1433, 1521, 2049, 3306, 5432, 6379, 9200, 11211, 27017],
@@ -74,6 +80,12 @@ DEFAULT_SETTINGS = {
     "ciso_ca_pem": "",
     "ciso_auto": False,
     "ciso_observation": "",
+    # CISO Assistant: folder (domain) per site, and the change report sent as a second evidence.
+    "ciso_site_folders": {},
+    "ciso_changes": False,
+    "ciso_changes_evidence_id": "",
+    # Compliance policies applied on top of the global one: [{"kind": "site"|"tag", "name", "policy"}].
+    "scoped_policies": [],
 }
 
 
@@ -254,9 +266,14 @@ class Database:
 
     def gateways(self):
         with self._conn() as c:
-            return [dict(r) for r in c.execute("SELECT id, name, kind, firewall_id, upload_id, gateway_type, "
+            rows = [dict(r) for r in c.execute("SELECT id, name, kind, firewall_id, upload_id, gateway_type, "
                                                "updated, score, level, rules, findings, critical, "
-                                               "ciso_evidence_id FROM gateways ORDER BY name")]
+                                               "ciso_evidence_id, ciso_folder_id, options_enc "
+                                               "FROM gateways ORDER BY name")]
+        for row in rows:
+            blob = row.pop("options_enc")
+            row["options"] = self.cipher.decrypt_json(blob, None) if blob else None
+        return rows
 
     def gateway(self, name):
         with self._conn() as c:
@@ -265,6 +282,7 @@ class Database:
             return None
         row = dict(row)
         row["state"] = self.cipher.decrypt_json(row.pop("state_enc"), {})
+        row["options"] = self.cipher.decrypt_json(row.pop("options_enc"), None) if row.get("options_enc") else None
         return row
 
     def save_gateway(self, name, kind, gateway_type, state, firewall_id=None, upload_id=None, summary=None):
@@ -287,9 +305,17 @@ class Database:
                            summary.get("findings"), summary.get("critical"), gateway_id))
         return gateway_id
 
-    def set_gateway_evidence(self, gateway_id, evidence_id):
+    def set_gateway_evidence(self, gateway_id, evidence_id, folder_id=None):
         with self._conn() as c:
-            c.execute("UPDATE gateways SET ciso_evidence_id=? WHERE id=?", (evidence_id or None, gateway_id))
+            c.execute("UPDATE gateways SET ciso_evidence_id=?, ciso_folder_id=? WHERE id=?",
+                      (evidence_id or None, folder_id or None, gateway_id))
+
+    def set_gateway_options(self, gateway_id, options):
+        """Own settings of a gateway analysed from a configuration file (encrypted)."""
+        with self._conn() as c:
+            c.execute("UPDATE gateways SET options_enc=?, ciso_evidence_id=?, ciso_folder_id=? WHERE id=?",
+                      (self.cipher.encrypt_json(options), options.get("ciso_evidence_id") or None,
+                       options.get("ciso_folder_id") or None, gateway_id))
 
     # ------------------------------------------------------------------ CISO Assistant uploads
 
@@ -367,6 +393,40 @@ class Database:
         if row is None:
             return None
         return {"name": row["name"], "mime": row["mime"], "content": self.cipher.decrypt(row["content_enc"])}
+
+    def update_analysis_data(self, analysis_id, data):
+        """Replace the data of a stored analysis (accepted risks re-evaluated)."""
+        risk = data.get("risk") or {}
+        with self._conn() as c:
+            c.execute("UPDATE analyses SET score=?, level=?, data_enc=? WHERE id=?",
+                      (risk.get("score"), risk.get("level"), self.cipher.encrypt_json(data), analysis_id))
+
+    def update_gateway_summary(self, gateway_id, summary):
+        with self._conn() as c:
+            c.execute("UPDATE gateways SET score=?, level=?, rules=?, findings=?, critical=? WHERE id=?",
+                      (summary.get("score"), summary.get("level"), summary.get("rules"),
+                       summary.get("findings"), summary.get("critical"), gateway_id))
+
+    # ------------------------------------------------------------------ accepted risks
+
+    def exceptions(self):
+        with self._conn() as c:
+            rows = [dict(r) for r in c.execute("SELECT * FROM exceptions ORDER BY id DESC")]
+        for row in rows:
+            row["reason"] = self.cipher.decrypt_json(row.pop("reason_enc"), "") if row.get("reason_enc") else ""
+        return rows
+
+    def add_exception(self, gateway, check, rule_key, reason, owner, expires, username):
+        with self._conn() as c:
+            cur = c.execute("INSERT INTO exceptions (gateway, check_name, rule_key, reason_enc, owner, expires, "
+                            "created, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (gateway or None, check, rule_key or None, self.cipher.encrypt_json(reason),
+                             owner, expires or None, now(), username))
+            return cur.lastrowid
+
+    def delete_exception(self, exception_id):
+        with self._conn() as c:
+            c.execute("DELETE FROM exceptions WHERE id=?", (exception_id,))
 
     def prune_analyses(self, gateway_id, keep):
         """Keep the `keep` most recent analyses of a gateway (artifacts are deleted in cascade)."""

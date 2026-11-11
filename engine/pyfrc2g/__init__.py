@@ -4,7 +4,7 @@ Convert firewall rules (pfSense, OPNsense, FortiGate, iptables, nftables, Storms
 flow diagrams, audit and compliance reports. See pyfrc2g/main.py for the package layout.
 """
 
-__version__ = "2.2.0"  # keep in sync with pyproject.toml
+__version__ = "2.3.0"  # keep in sync with pyproject.toml
 __author__ = "PyFRC2G Contributors"
 
 from pyfrc2g.config import Config

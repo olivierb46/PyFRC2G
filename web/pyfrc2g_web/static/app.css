@@ -204,3 +204,18 @@ pre.log { background: #0b1220; color: #d6e2ff; border-radius: var(--radius); pad
 .filters-bar select { width: auto; min-width: 140px; }
 .test-result.ok { border-left: 4px solid var(--ok); }
 .test-result.bad { border-left: 4px solid var(--bad); }
+
+/* Documentation page (rendered from HOW_IT_WORKS.md) */
+.doc-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.doc-toc { position: sticky; top: 16px; }
+.doc-toc h3 { margin: 0 0 8px; font-size: 14px; }
+.doc-toc ol { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.7; }
+.doc { max-width: 960px; line-height: 1.6; }
+.doc h1 { margin-bottom: 14px; }
+.doc h2 { margin: 28px 0 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+.doc h2:first-of-type { border-top: 0; }
+.doc p, .doc li { font-size: 14px; }
+.doc pre { overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; line-height: 1.4; }
+.doc :not(pre) > code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+.doc .table-wrap { margin: 12px 0; }
+@media (max-width: 900px) { .doc-layout { grid-template-columns: minmax(0, 1fr); } .doc-toc { position: static; } }

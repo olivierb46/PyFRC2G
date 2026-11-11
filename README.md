@@ -2,7 +2,7 @@
 
 Convert firewall rules into graphical flow diagrams, audit and compliance reports:
 **pfSense** and **OPNsense** (API or XML backup), **FortiGate**, **iptables**, **nftables** and
-**Stormshield** (configuration files).
+**Stormshield** (configuration files) and **nfSensei** (API or running configuration).
 
 ![pfSense Example](./img/convert-rules-to-graph.png)
 ![OPNSense Example](./img/opnsense.png)
@@ -20,6 +20,7 @@ Convert firewall rules into graphical flow diagrams, audit and compliance report
 | [`web/`](web/) | `pyfrc2g-web` | The web application (Flask): dashboard, charts and graphs per firewall, API firewalls configuration, uploads, users and roles, data encrypted in SQLite. Uses the engine. |
 
 Full documentation: [`engine/README.md`](engine/README.md) and [`web/README.md`](web/README.md).
+How the analysis works and how to read the results (risk score, findings, accepted risks, reports, CISO Assistant), [`HOW_IT_WORKS.md`](HOW_IT_WORKS.md) (also shown in the web application, page *How it works*).
 
 ## 🚀 Quick start
 

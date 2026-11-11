@@ -71,10 +71,11 @@ def read_backup(path, args):
     return None if parsed[0] is None else parsed
 
 
-def load_backup_file(path, args, gateway_name_override=None, default_name=None):
+def load_backup_file(path, args, gateway_name_override=None, default_name=None, target=None):
     """
     Read rules from a configuration file. Returns (config, entries, nat_entries, info) or None.
     Gateway name: override, else hostname found in the file, else default_name / file name.
+    target: optional per-firewall settings (audit ports, WAN interfaces, meta, CISO ids...).
     """
     from pyfrc2g.config import Config
 
@@ -87,12 +88,12 @@ def load_backup_file(path, args, gateway_name_override=None, default_name=None):
         logging.warning("No rules found in backup file - output may be empty")
     name = gateway_name_override or name_from_file or default_name or Path(path).stem
     config = Config(gateway_name_override=name,
-                    gateway_type_override=gateway_type, output_base=args.output_dir)
+                    gateway_type_override=gateway_type, output_base=args.output_dir, target=target)
     _apply_maps(maps)
     mode = maps.get("nat_outbound_mode")
     info = {"source": f"{gateway_type} backup {os.path.basename(os.path.normpath(path))}",
             "source_fingerprint": _sha256_file(path) if os.path.isfile(path) else "",
-            "extra_meta": [("Outbound NAT mode", mode)] if mode else []}
+            "extra_meta": list(config.extra_meta) + ([("Outbound NAT mode", mode)] if mode else [])}
     hits_source = getattr(args, "hits", None)
     if hits_source == "api":
         logging.warning("--hits api needs API mode: give the output of 'pfctl -vvsr' as a file instead")
@@ -107,14 +108,14 @@ def load_api(target, args, gateway_name_override=None):
     """Fetch rules from a firewall API. Returns (config, entries, nat_entries, info) or None."""
     from pyfrc2g.analysis.hits import load_counters_file
     from pyfrc2g.config import Config
-    from pyfrc2g.inputs.api_client import APIClient
+    from pyfrc2g.inputs.api_client import new_client
 
     config = Config(gateway_name_override=gateway_name_override, target=target,
                     output_base=args.output_dir, interfaces_override=parse_interfaces(args))
-    if config.gateway_type not in ("pfsense", "opnsense"):
-        logging.error(f"Unknown gateway type: {config.gateway_type}. Use 'pfsense' or 'opnsense'.")
+    if config.gateway_type not in ("pfsense", "opnsense", "nfsensei"):
+        logging.error(f"Unknown gateway type: {config.gateway_type}. Use 'pfsense', 'opnsense' or 'nfsensei'.")
         return None
-    client = APIClient(config)
+    client = new_client(config)
     client.fetch_aliases()
     entries = client.fetch_rules()
     if not entries:
@@ -130,7 +131,12 @@ def load_api(target, args, gateway_name_override=None):
         entries = filter_by_interfaces(entries, wanted)
         nat_entries = filter_by_interfaces(nat_entries or [], wanted, keep_floating=False)
         logging.info(f"Interfaces {config.interfaces}: {len(entries)} rule(s) kept (floating rules included)")
-    info = {"source": f"{config.gateway_type} API {config.base_url}", "extra_meta": list(config.extra_meta)}
+    info = {"source": f"{config.gateway_type} API {config.base_url}", "extra_meta": list(config.extra_meta),
+            # Aliases and interfaces of this firewall: installed again before the analysis, because the
+            # lookup maps are process-wide and other firewalls may be loaded in parallel meanwhile.
+            "maps": {"interface_map": client.interface_map, "net_map": client.net_map,
+                     "address_map": client.address_map, "port_map": client.port_map,
+                     "alias_details": client.alias_details, "interface_nets": client.interface_nets}}
     if not getattr(args, "no_hits", False):
         hits_source = getattr(args, "hits", None) or config.hits_source
         info["hits_source"] = hits_source
@@ -161,6 +167,8 @@ def process_firewall(loaded, args, from_backup):
     from pyfrc2g.outputs.ciso import CISOCClient
 
     config, entries, nat_entries, info = loaded
+    if info.get("maps"):
+        _apply_maps(info["maps"])
     interfaces = parse_interfaces(args)
     if interfaces:
         entries = filter_by_interfaces(entries, interfaces)
@@ -257,6 +265,13 @@ def analyse(config, rows, nat_rows, info, args, hits=None, global_csv=None):
         logging.info(f"Compliance policy: {len(violations)} violation(s)")
         findings += violations
     findings = sort_findings(findings)
+    accepted = []
+    exceptions = getattr(args, "exceptions", None)
+    if exceptions:
+        from pyfrc2g.analysis.exceptions import split
+
+        findings, accepted = split(findings, exceptions, config.gateway_name)
+        logging.info(f"Accepted risks: {len(accepted)} finding(s) left out of the audit")
     logging.info(f"Audit: {len(findings)} finding(s)")
     risk = compute_risk(findings, config.risk_weights,
                         os.path.join(config.graph_output_dir, "risk_history.json"), info["generated_at"])
@@ -268,7 +283,7 @@ def analyse(config, rows, nat_rows, info, args, hits=None, global_csv=None):
         source_fingerprint=info.get("source_fingerprint"), audit=findings, changes=changes,
         nat=nat_rows, interfaces_filter=info.get("interfaces_filter"), risk=risk,
         matrix=build_matrix(rows, config.gateway_type), hits=hits_rows,
-        extra_meta=info.get("extra_meta"), hits_note=info.get("hits_note"),
+        extra_meta=info.get("extra_meta"), hits_note=info.get("hits_note"), accepted=accepted,
     )
 
 
@@ -276,6 +291,7 @@ def write_csv_files(report, out, host, rule_fields):
     """Global CSV (next change report snapshot), audit, changes, NAT, rule usage and matrix CSVs."""
     from pyfrc2g.analysis.audit import AUDIT_FIELDNAMES
     from pyfrc2g.analysis.changes import CHANGES_FIELDNAMES
+    from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
     from pyfrc2g.analysis.hits import HITS_FIELDNAMES
     from pyfrc2g.analysis.matrix import MATRIX_FIELDNAMES
     from pyfrc2g.model.nat import NAT_FIELDNAMES
@@ -284,7 +300,8 @@ def write_csv_files(report, out, host, rule_fields):
     global_csv = write_csv(os.path.join(out, f"{host}_ALL_flows.csv"), rule_fields, report.rules)
     logging.info(f"✓ Global CSV created: {global_csv}")
     write_csv(os.path.join(out, f"{host}_AUDIT.csv"), AUDIT_FIELDNAMES, report.audit)
-    optional = [("CHANGES", CHANGES_FIELDNAMES, report.changes), ("NAT", NAT_FIELDNAMES, report.nat),
+    optional = [("CHANGES", CHANGES_FIELDNAMES, report.changes), ("ACCEPTED", ACCEPTED_FIELDNAMES, report.accepted),
+                ("NAT", NAT_FIELDNAMES, report.nat),
                 ("HITS", HITS_FIELDNAMES, report.hits),
                 ("MATRIX", MATRIX_FIELDNAMES, report.matrix["rows"] if report.matrix else None)]
     for suffix, fieldnames, rows in optional:
@@ -309,6 +326,7 @@ def write_pdf_files(report, config, args, out, host, rule_fields):
     from pyfrc2g.outputs.graphs import GraphGenerator
     from pyfrc2g.outputs.pdf import (
         assemble_pdf,
+        write_accepted_pdf,
         write_audit_pdf,
         write_changes_pdf,
         write_hits_pdf,
@@ -333,6 +351,7 @@ def write_pdf_files(report, config, args, out, host, rule_fields):
             ("Summary", write_summary_pdf(report, os.path.join(work, "summary.pdf"))),
             ("Changes", write_changes_pdf(report, os.path.join(work, "changes.pdf"))),
             ("Audit", write_audit_pdf(report, os.path.join(work, "audit.pdf"))),
+            ("Accepted risks", write_accepted_pdf(report, os.path.join(work, "accepted.pdf"))),
             ("Zone matrix", write_matrix_pdf(report, os.path.join(work, "matrix.pdf"))),
             ("Rule usage", write_hits_pdf(report, os.path.join(work, "hits.pdf"))),
             ("NAT", write_nat_pdf(report, os.path.join(work, "nat.pdf"))),

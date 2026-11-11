@@ -26,10 +26,17 @@
     <input type="text" id="ciso_folder_id" name="ciso_folder_id" value="{{ c.ciso_folder_id }}" placeholder="UUID of the folder">
     <label for="ciso_evidence_id">Default evidence id</label>
     <input type="text" id="ciso_evidence_id" name="ciso_evidence_id" value="{{ c.ciso_evidence_id }}" placeholder="UUID of the evidence">
-    <div class="help">Used for every firewall without its own evidence (set on each firewall page, tab Reports &amp; files).</div>
+    <div class="help">Used for every firewall without its own evidence (set on each firewall page). The folder above can also be set per firewall when the proof belongs to another site.</div>
+    <label for="ciso_site_folders">Folder per site <span class="muted">(optional)</span></label>
+    <textarea id="ciso_site_folders" name="ciso_site_folders" spellcheck="false" placeholder="Paris=0b1c...&#10;Lyon=7d2e...">{{ c.site_folders }}</textarea>
+    <div class="help">One <code>site=folder id</code> per line. A firewall whose Site matches is sent to that folder, unless it has its own folder id. Order of precedence: folder of the firewall, folder of its site, default folder.</div>
     <label for="ciso_observation">Revision comment</label>
     <input type="text" id="ciso_observation" name="ciso_observation" value="{{ c.ciso_observation }}" placeholder="{{ default_note }}">
     <div class="help">Variables: <code>{gateway}</code>, <code>{date}</code>, <code>{score}</code>, <code>{level}</code>.</div>
+    <label class="check mt"><input type="checkbox" name="ciso_changes" value="1" {{ 'checked' if c.changes }}> Also send the change report (CSV of the rules added, modified or removed)</label>
+    <label for="ciso_changes_evidence_id">Change report evidence id</label>
+    <input type="text" id="ciso_changes_evidence_id" name="ciso_changes_evidence_id" value="{{ c.ciso_changes_evidence_id }}" placeholder="UUID of the evidence">
+    <div class="help">A firewall can have its own (firewall settings). Nothing is sent without an evidence id.</div>
     <label class="check mt"><input type="checkbox" name="ciso_auto" value="1" {{ 'checked' if c.auto }}> Send automatically after each new analysis (manual, scheduled or uploaded file)</label>
   </div>
 </div>

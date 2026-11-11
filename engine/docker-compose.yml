@@ -9,7 +9,7 @@
 services:
   pyfrc2g:
     build: .
-    image: pyfrc2g:2.2.0
+    image: pyfrc2g:2.3.0
     restart: unless-stopped
     command: ["--api", "--every", "6h"]
     env_file: .env

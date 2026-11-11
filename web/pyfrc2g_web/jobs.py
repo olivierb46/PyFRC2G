@@ -30,6 +30,7 @@ from pyfrc2g_web.db import now
 RUN_LOCK = threading.RLock()
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 MAX_ARCHIVE_SIZE = 200 * 1024 * 1024
+AUDIT_FIELDS = ("SEVERITY", "CHECK", "GATEWAY", "RULE ORDER", "RULE ID", "RULE", "DETAIL")
 STATE_FILES = ("risk_history.json", "hits_history.json", "fingerprint.txt")
 INTERNAL_FILES = set(STATE_FILES)
 
@@ -81,6 +82,41 @@ def _extract(archive, target):
                 check(member.name, member.size)
             extra = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
             tf.extractall(root, members=members, **extra)
+
+
+NFSENSEI_CONFIG_NAMES = ("running.yaml", "config.yaml.lkg")
+
+
+def slim_upload(filename, content):
+    """
+    A full nfSensei backup archive (the whole /etc/nfsensei folder, hundreds of MB, with API key
+    hashes and certificates) is reduced to its running.yaml before being stored. Anything else is
+    returned unchanged. Returns (filename, content).
+    """
+    import io
+
+    lowered = (filename or "").lower()
+    if not lowered.endswith(ARCHIVE_SUFFIXES):
+        return filename, content
+    wanted = None
+    try:
+        if lowered.endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                names = [i.filename for i in zf.infolist() if not i.is_dir() and i.filename.count("/") <= 1]
+                for config_name in NFSENSEI_CONFIG_NAMES:
+                    wanted = next((n for n in names if os.path.basename(n) == config_name), None)
+                    if wanted:
+                        return f"{base_name(filename)}-{config_name}", zf.read(wanted)
+        else:
+            with tarfile.open(fileobj=io.BytesIO(content)) as tf:
+                members = [m for m in tf.getmembers() if m.isfile() and m.name.lstrip("./").count("/") <= 1]
+                for config_name in NFSENSEI_CONFIG_NAMES:
+                    member = next((m for m in members if os.path.basename(m.name) == config_name), None)
+                    if member is not None and member.size < 5 * 1024 * 1024:
+                        return f"{base_name(filename)}-{config_name}", tf.extractfile(member).read()
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, KeyError):
+        pass
+    return filename, content
 
 
 def _input_path(work, filename, content):
@@ -135,16 +171,21 @@ def apply_settings(settings):
 
 
 def _args(work, extra=(), policy=""):
+    """Engine arguments; policy: a YAML text or a list of YAML texts (their policies are added up)."""
     from pyfrc2g.analysis.policy import PolicyError, parse_policy
     from pyfrc2g.cli import parse_args
 
     args = parse_args(["--output-dir", work, *extra])
     args.policies = None
-    if (policy or "").strip():
-        try:
-            args.policies = parse_policy(policy)
-        except PolicyError as e:
-            raise JobError(f"invalid compliance policy: {e}") from e
+    texts = [policy] if isinstance(policy, str) else list(policy)
+    policies = []
+    for text in texts:
+        if (text or "").strip():
+            try:
+                policies.extend(parse_policy(text))
+            except PolicyError as e:
+                raise JobError(f"invalid compliance policy: {e}") from e
+    args.policies = policies or None
     return args
 
 
@@ -170,7 +211,7 @@ def test_firewall(firewall, settings, tmp_dir):
     running analysis (the alias maps of the engine are shared).
     """
     from pyfrc2g.config import Config
-    from pyfrc2g.inputs.api_client import APIClient
+    from pyfrc2g.inputs.api_client import new_client
 
     from pyfrc2g_web import fwopts
 
@@ -187,7 +228,7 @@ def test_firewall(firewall, settings, tmp_dir):
         opts = fwopts.options(firewall)
         target = firewall_target(firewall, work, opts)
         target["interfaces"] = []  # Detect every interface, whatever is selected.
-        client = APIClient(Config(target=target, output_base=work))
+        client = new_client(Config(target=target, output_base=work))
         interfaces, nets, _, ports = client.fetch_aliases()
         if not interfaces and not nets and not ports:
             lines.append("✗ No interface nor alias returned: check the URL, the credentials and TLS.")
@@ -293,6 +334,10 @@ def _build_analysis(config, gateway_dir, host, source_label, run_id):
 
     rows = _read_csv(os.path.join(gateway_dir, f"{host}_ALL_flows.csv")) or []
     audit = _read_csv(os.path.join(gateway_dir, f"{host}_AUDIT.csv")) or []
+    # Accepted risks are not in the audit CSV: keep them (without their justification, re-read from the
+    # database) so that a later change of the exceptions can re-evaluate the analysis.
+    accepted = _read_csv(os.path.join(gateway_dir, f"{host}_ACCEPTED.csv")) or []
+    everything = audit + [{k: v for k, v in row.items() if k in AUDIT_FIELDS} for row in accepted]
     history = _read_json(os.path.join(gateway_dir, "risk_history.json"), [])
     last = history[-1] if history else {}
     score = last.get("score")
@@ -307,7 +352,7 @@ def _build_analysis(config, gateway_dir, host, source_label, run_id):
     data = {
         "gateway": host, "gateway_type": config.gateway_type, "source": source_label,
         "generated": now(), "run_id": run_id, "fingerprint": fingerprint,
-        "rules": rows, "audit": audit, "severities": severities,
+        "rules": rows, "audit": audit, "audit_all": everything, "severities": severities,
         "changes": _read_csv(os.path.join(gateway_dir, f"{host}_CHANGES.csv")),
         "nat": _read_csv(os.path.join(gateway_dir, f"{host}_NAT.csv")) or [],
         "hits": _read_csv(os.path.join(gateway_dir, f"{host}_HITS.csv")) or [],
@@ -344,6 +389,9 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
     previous = db.gateway(host)
     _restore_state(gateway_dir, host, previous["state"] if previous else {})
 
+    from pyfrc2g_web import exceptions as accepted
+
+    args.exceptions = accepted.engine_list(db.exceptions())  # Accepted risks: left out of every report.
     process_firewall(loaded, args, from_backup=(kind == "upload"))
 
     report = os.path.join(gateway_dir, f"{host}_REPORT.html")
@@ -351,15 +399,18 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
     data = artifacts = None
     if os.path.isfile(report):
         data, artifacts = _build_analysis(config, gateway_dir, host, source_label, run_id)
+        from pyfrc2g_web import exceptions
+
+        exceptions.apply(data, db.exceptions(), host)  # Accepted risks leave the findings and the score.
         if opts is None or opts["svg"]:
             artifacts += _render_svgs(config, data["rules"], work)
-        summary = {"score": data["risk"]["score"], "level": data["risk"]["level"],
-                   "rules": len(data["rules"]), "findings": len(data["audit"]),
-                   "critical": data["severities"].get("CRITICAL", 0)}
+        summary = exceptions.summary(data)
     gateway_id = db.save_gateway(host, kind, config.gateway_type, _collect_state(gateway_dir, host),
                                  firewall_id=firewall_id, upload_id=upload_id, summary=summary)
-    if opts is not None:  # The firewall settings hold its CISO Assistant evidence.
-        db.set_gateway_evidence(gateway_id, opts["ciso_evidence_id"])
+    if opts is not None and kind == "upload":  # Settings given with the file: kept for the next analyses.
+        db.set_gateway_options(gateway_id, opts)
+    elif opts is not None:  # The firewall settings hold its CISO Assistant evidence and folder.
+        db.set_gateway_evidence(gateway_id, opts["ciso_evidence_id"], opts["ciso_folder_id"])
     if data is not None:
         analysis_id = db.add_analysis(gateway_id, run_id, data, artifacts)
         db.prune_analyses(gateway_id, (opts or {}).get("retention") or settings.get("retention", 30))
@@ -376,20 +427,90 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
     return host
 
 
+def _load_api_source(db, settings, source, work):
+    """
+    Read one API firewall (network bound). Returns (firewall, opts, args, loaded). Thread safe: it
+    does not touch the process-wide state of the analysis (the alias maps come with `loaded`).
+    """
+    from pyfrc2g.cli import load_job
+
+    from pyfrc2g_web import fwopts
+
+    firewall = db.firewall(source["firewall_id"])
+    if firewall is None:
+        raise JobError("firewall not found")
+    opts = fwopts.options(firewall)
+    target = firewall_target(firewall, work, opts)
+    extra = fwopts.arguments(opts, firewall["type"], settings)
+    if source.get("force"):
+        extra.append("--force")
+    args = _args(work, extra, fwopts.policy_texts(opts, settings))
+    loaded, _ = load_job(target, args, from_backup=False)
+    if loaded is None:
+        raise JobError(f"{firewall['name']}: rules could not be retrieved (see the log)")
+    return firewall, opts, args, loaded
+
+
+def _prefetch(state, settings, sources):
+    """
+    Reads the API firewalls of a run in parallel (settings: parallel_fetch). Returns
+    {source index: (work dir, (firewall, opts, args, loaded) | JobError)}; the analyses and the
+    reports stay sequential, as the analysis modules share process-wide state.
+    """
+    from pyfrc2g.utils import load_in_parallel
+
+    db = state["db"]
+    indexes = [i for i, s in enumerate(sources) if s["kind"] == "api"]
+    workers = min(max(1, int(settings.get("parallel_fetch") or 1)), len(indexes))
+    if workers < 2:
+        return {}
+    logging.info(f"Reading {len(indexes)} API firewall(s) with {workers} parallel worker(s)")
+    works = {i: tempfile.mkdtemp(prefix="run-", dir=state["tmp_dir"]) for i in indexes}
+
+    def load(index):
+        try:
+            return _load_api_source(db, settings, sources[index], works[index])
+        except JobError as e:
+            return e
+
+    names = []
+    for i in indexes:
+        firewall = db.firewall(sources[i]["firewall_id"])
+        names.append((firewall["name"] if firewall else f"firewall {sources[i]['firewall_id']}", i))
+    results = load_in_parallel(names, load, workers)
+    prefetched = {}
+    for (_, index), result in zip(names, results):
+        prefetched[index] = (works[index], JobError(str(result)) if isinstance(result, Exception)
+                             and not isinstance(result, JobError) else result)
+    return prefetched
+
+
 def run_analysis(state, run_id, sources):
     """
     sources: [{"kind": "api", "firewall_id": id}] / [{"kind": "upload", "upload_id": id}].
     Returns an exit code (0 = every source analysed).
     """
-    from pyfrc2g.cli import load_job
-    from pyfrc2g.pipeline import load_backup_file
-
     db = state["db"]
     settings = db.settings()
     apply_settings(settings)
     exit_code, gateways = 0, []
     os.makedirs(state["tmp_dir"], mode=0o700, exist_ok=True)
-    for source in sources:
+    from pyfrc2g.utils import install_thread_prefix
+
+    install_thread_prefix()
+    prefetched = _prefetch(state, settings, sources)
+    try:
+        return _run_sources(state, run_id, sources, settings, prefetched, exit_code, gateways)
+    finally:
+        for work, _ in prefetched.values():
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def _run_sources(state, run_id, sources, settings, prefetched, exit_code, gateways):
+    from pyfrc2g.pipeline import load_backup_file
+
+    db = state["db"]
+    for index, source in enumerate(sources):
         if source["kind"] == "ciso":
             from pyfrc2g_web import ciso
 
@@ -399,7 +520,7 @@ def run_analysis(state, run_id, sources):
             db.update_run(run_id, gateways=gateways)
             exit_code = max(exit_code, 0 if ok else 1)
             continue
-        work = tempfile.mkdtemp(prefix="run-", dir=state["tmp_dir"])
+        work = prefetched[index][0] if index in prefetched else tempfile.mkdtemp(prefix="run-", dir=state["tmp_dir"])
         try:
             if source["kind"] == "upload":
                 upload = db.upload(source["upload_id"])
@@ -410,27 +531,40 @@ def run_analysis(state, run_id, sources):
                 if not settings.get("automatic_rules", True):
                     extra.append("--no-automatic-rules")
                 args = _args(work, extra, settings.get("policy"))
-                loaded = load_backup_file(path, args, default_name=base_name(upload["filename"]))
+                name = source.get("name") or None
+                loaded = load_backup_file(path, args, gateway_name_override=name,
+                                          default_name=base_name(upload["filename"]))
                 if loaded is None:
                     raise JobError(f"{upload['filename']}: format not recognised or file unreadable")
+                # The gateway name is known once the file is read: apply its own settings (and the
+                # ones given with the upload), then read the file again with them.
+                known = db.gateway(loaded[0].gateway_name)
+                known = known if known and known["kind"] == "upload" else None
+                hints = {key: source[key] for key in ("site", "ciso_folder_id", "ciso_evidence_id")
+                         if source.get(key)}
+                opts = None
+                if hints or (known and known.get("options") is not None):
+                    from pyfrc2g_web import fwopts
+
+                    opts = fwopts.options({"config": {**((known or {}).get("options") or {}), **hints}})
+                    extra = ["--format", upload["format"],
+                             *fwopts.arguments(opts, loaded[0].gateway_type, settings)]
+                    args = _args(work, extra, fwopts.policy_texts(opts, settings))
+                    loaded = load_backup_file(path, args, gateway_name_override=name,
+                                              default_name=base_name(upload["filename"]),
+                                              target=fwopts.backup_target(opts))
+                    if loaded is None:
+                        raise JobError(f"{upload['filename']}: format not recognised or file unreadable")
                 label = f"File {upload['filename']}"
                 ids = {"upload_id": upload["id"]}
-                opts = None
             else:
-                firewall = db.firewall(source["firewall_id"])
-                if firewall is None:
-                    raise JobError("firewall not found")
-                from pyfrc2g_web import fwopts
-
-                opts = fwopts.options(firewall)
-                target = firewall_target(firewall, work, opts)
-                extra = fwopts.arguments(opts, firewall["type"], settings)
-                if source.get("force"):
-                    extra.append("--force")
-                args = _args(work, extra, fwopts.policy_text(opts, settings))
-                loaded, _ = load_job(target, args, from_backup=False)
-                if loaded is None:
-                    raise JobError(f"{firewall['name']}: rules could not be retrieved (see the log)")
+                if index in prefetched:
+                    result = prefetched[index][1]
+                    if isinstance(result, Exception):
+                        raise result
+                    firewall, opts, args, loaded = result
+                else:
+                    firewall, opts, args, loaded = _load_api_source(db, settings, source, work)
                 label = f"API {firewall['config'].get('url')}"
                 ids = {"firewall_id": firewall["id"]}
             state["args"], state["settings"] = args, settings

@@ -19,6 +19,7 @@
         <input type="hidden" name="firewall_id" value="{{ gw.firewall_id }}"><input type="hidden" name="force" value="1"><button class="btn">Analyse now</button></form>{% endif %}
       {% if data and ciso.configured %}<form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}
         <input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn secondary" {{ 'disabled' if not ciso.evidence }} title="{{ 'Evidence ' ~ ciso.evidence if ciso.evidence else 'No evidence id' }}">Send to CISO Assistant</button></form>{% endif %}
+      {% if gw.kind == 'upload' %}<a class="btn secondary" href="{{ url_for('main.gateway_settings', name=gw.name) }}">Settings</a>{% endif %}
       {% if gw.kind == 'upload' and gw.upload_id %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=gw.upload_id) }}">{{ csrf() }}<button class="btn secondary">Analyse the file again</button></form>{% endif %}
     {% endif %}
   </div>
@@ -36,7 +37,7 @@
   <div class="card kpi"><span class="label">Risk score</span><span class="value">{{ data.risk.score if data.risk.score is not none else "—" }}</span>
     <span>{{ level_badge(data.risk.level) }}{% if data.risk.delta is not none %} <span class="muted small">{{ "%+d"|format(data.risk.delta) }} since previous</span>{% endif %}</span></div>
   <div class="card kpi"><span class="label">Rules</span><span class="value">{{ data.rules|length }}</span><span class="muted small">{{ data.interfaces|length }} interface(s)</span></div>
-  <div class="card kpi {{ 'bad' if data.severities.get('CRITICAL') }}"><span class="label">Findings</span><span class="value">{{ data.audit|length }}</span><span class="muted small">{{ data.severities.get('CRITICAL', 0) }} critical · {{ data.severities.get('HIGH', 0) }} high</span></div>
+  <div class="card kpi {{ 'bad' if data.severities.get('CRITICAL') }}"><span class="label">Findings</span><span class="value">{{ data.audit|length }}</span><span class="muted small">{{ data.severities.get('CRITICAL', 0) }} critical · {{ data.severities.get('HIGH', 0) }} high{% if data.accepted %} · {{ data.accepted|length }} accepted{% endif %}</span></div>
   <div class="card kpi"><span class="label">Changes</span><span class="value">{{ data.changes|length if data.changes is not none else "—" }}</span><span class="muted small">{{ "since the previous analysis" if data.changes is not none else "first analysis" }}</span></div>
 </div>
 <div class="grid cols-3 section">
@@ -65,6 +66,26 @@
 
 {% elif tab == "audit" %}
 {% call(field, value) data_table("audit", ["SEVERITY", "CHECK", "GATEWAY", "RULE ORDER", "RULE", "DETAIL"], data.audit, empty="No finding: nothing to report.") %}{% if field == "SEVERITY" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
+{% if g.user.role == 'admin' and data.audit %}
+<details class="card section"><summary><b>Accept a finding</b> <span class="muted">(justified risk: it leaves the findings and the score)</span></summary>
+<form method="post" action="{{ url_for('main.accept_finding', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}">
+  <label for="acc-finding">Finding</label>
+  <select id="acc-finding" name="finding">{% for f in data.audit %}<option value="{{ loop.index0 }}">{{ f.SEVERITY }} · {{ f.CHECK }} · #{{ f["RULE ORDER"] }} {{ f.GATEWAY }} · {{ f.RULE[:90] }}</option>{% endfor %}</select>
+  <div class="grid cols-2">
+    <div><label for="acc-scope">Applies to</label><select id="acc-scope" name="scope"><option value="rule">This rule only</option><option value="check">Every rule raising this check</option></select></div>
+    <div><label for="acc-where">On</label><select id="acc-where" name="where"><option value="this">{{ gw.name }}</option><option value="all">All firewalls</option></select></div>
+    <div><label for="acc-owner">Owner <span class="muted">(optional)</span></label><input type="text" id="acc-owner" name="owner" maxlength="64"></div>
+    <div><label for="acc-expires">Expires on <span class="muted">(optional, review date)</span></label><input type="date" id="acc-expires" name="expires"></div>
+  </div>
+  <label for="acc-reason">Justification</label><input type="text" id="acc-reason" name="reason" maxlength="500" required>
+  <div class="form-actions"><button class="btn">Accept this risk</button></div>
+</form></details>
+{% endif %}
+{% if data.accepted %}
+<div class="section"><h2>Accepted risks <span class="muted small">({{ data.accepted|length }})</span></h2>
+{% call(field, value) data_table("accepted", ["SEVERITY", "CHECK", "RULE", "REASON", "OWNER", "EXPIRES"], data.accepted) %}{% if field == "SEVERITY" %}{{ badge(value) }}{% elif field == "EXPIRES" %}{{ value or "never" }}{% else %}{{ value }}{% endif %}{% endcall %}
+{% if g.user.role == 'admin' %}<p class="help"><a href="{{ url_for('admin.exceptions') }}">Manage the accepted risks</a></p>{% endif %}</div>
+{% endif %}
 
 {% elif tab == "changes" %}
 {% if data.changes is none %}<div class="card empty">First analysis of this firewall: changes will be listed from the next one.</div>
@@ -79,10 +100,10 @@
 <tbody>{% for s in data.matrix.sources %}<tr><td>{{ s }}</td>{% for d in data.matrix.destinations %}{% set cell = data.matrix.cells.get(s ~ "|" ~ d, ["", ""]) %}
 <td class="{{ 'same' if cell[0] == '-' else cell[0] }}" title="{{ cell[1] }}">{{ cell[0] }}{% if cell[0] == "PARTIAL" %}<small>{{ cell[1] }}</small>{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
 <p class="muted small">IPv4. ALLOWED: all traffic allowed by one rule · PARTIAL: some hosts or services only ('?' = alias or interface not fully resolved) · BLOCKED: no pass rule. Hover a cell for details.</p>
-{% else %}<div class="card empty">The zone matrix is available for pfSense, OPNsense and FortiGate.</div>{% endif %}
+{% else %}<div class="card empty">The zone matrix is available for pfSense, OPNsense, FortiGate and nfSensei.</div>{% endif %}
 
 {% elif tab == "usage" %}
-{% call(field, value) data_table("usage", ["STATUS", "GATEWAY", "RULE ORDER", "RULE", "PACKETS", "BYTES", "LAST TRAFFIC SEEN", "OBSERVED SINCE"], data.hits, empty="No hit counters for this firewall. pfSense: tick \"Read rule hit counters through the API\" in Administration > API firewalls (the API key needs the command prompt privilege). OPNsense: read from the API automatically. iptables / nftables: export with iptables-save -c or nft -j. Uploaded pfSense/OPNsense backups hold no counters.") %}{% if field == "STATUS" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
+{% call(field, value) data_table("usage", ["STATUS", "GATEWAY", "RULE ORDER", "RULE", "PACKETS", "BYTES", "LAST TRAFFIC SEEN", "OBSERVED SINCE"], data.hits, empty="No hit counters for this firewall. pfSense: tick \"Read rule hit counters through the API\" in Administration > API firewalls (the API key needs the command prompt privilege). OPNsense: read from the API automatically. iptables / nftables: export with iptables-save -c or nft -j. nfSensei: only the rules that have counters enabled are counted. Uploaded pfSense/OPNsense backups hold no counters.") %}{% if field == "STATUS" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
 
 {% elif tab == "graphs" %}
 {% if artifacts.graphs %}
@@ -106,13 +127,14 @@
   {% if not ciso.configured %}
   <p class="muted">Not configured{% if g.user.role == 'admin' %}: <a href="{{ url_for('admin.ciso') }}">Administration &gt; CISO Assistant</a>{% endif %}.</p>
   {% else %}
-  <p>The PDF report is sent as a new revision of evidence <span class="mono">{{ ciso.evidence or "—" }}</span>{% if not ciso.own and ciso.evidence %} <span class="muted">(default evidence)</span>{% endif %}{% if ciso.auto %} · <span class="badge info">automatic after each new analysis</span>{% endif %}.</p>
+  <p>The PDF report is sent as a new revision of evidence <span class="mono">{{ ciso.evidence or "—" }}</span>{% if not ciso.own and ciso.evidence %} <span class="muted">(default evidence)</span>{% endif %} in folder <span class="mono">{{ ciso.folder or "—" }}</span>{% if ciso.folder_origin == "site" %} <span class="muted">(folder of the site {{ ciso.site }})</span>{% elif ciso.folder_origin == "default" and ciso.folder %} <span class="muted">(default folder)</span>{% endif %}{% if ciso.changes %}. The change report goes to evidence <span class="mono">{{ ciso.changes }}</span>{% endif %}{% if ciso.auto %} · <span class="badge info">automatic after each new analysis</span>{% endif %}.</p>
   {% if g.user.role == 'admin' %}
   <div class="actions">
     <form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn" {{ 'disabled' if not ciso.evidence }}>Send analysis #{{ analysis.id }} now</button></form>
     <form class="inline-row" method="post" action="{{ url_for('main.ciso_evidence', name=gw.name) }}">{{ csrf() }}
       <input type="text" class="w-id" name="evidence_id" value="{{ ciso.own }}" placeholder="evidence id of this firewall (empty = default)" aria-label="Evidence id of this firewall">
-      <button class="btn secondary">Save evidence</button></form>
+      <input type="text" class="w-id" name="folder_id" value="{{ ciso.own_folder }}" placeholder="folder (domain) id, if the proof belongs to another site (empty = default)" aria-label="Folder id of this firewall">
+      <button class="btn secondary">Save</button></form>
   </div>
   {% endif %}
   {% endif %}
@@ -123,7 +145,8 @@
 <div class="grid cols-2">
   <div class="card"><h3>Stored analyses</h3><ul class="list-plain">{% for a in analyses %}<li>
     <a href="{{ url_for('main.gateway', name=gw.name, analysis=a.id) }}">#{{ a.id }} · {{ a.created }}</a> {{ level_badge(a.level) }} <span class="muted small">score {{ a.score }}</span>
-    {% if a.id == analysis.id %}<span class="badge info">shown</span>{% endif %}</li>{% endfor %}</ul></div>
+    {% if a.id == analysis.id %}<span class="badge info">shown</span>{% endif %}
+    {% if not loop.last %}<a class="small" href="{{ url_for('main.compare', a=gw.name ~ '|' ~ analyses[loop.index0 + 1].id, b=gw.name ~ '|' ~ a.id) }}">compare with the previous one</a>{% endif %}</li>{% endfor %}</ul></div>
   <div class="card"><h3>Risk score over time</h3>{{ charts.risk_line(history) }}</div>
 </div>
 <div class="section"><h2>Runs</h2>{{ runs_table(runs) }}</div>

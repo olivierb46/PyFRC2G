@@ -33,8 +33,8 @@ GATEWAY_NAME = "<GW_NAME>"  # Display name for gateway (used in labels).
 
 # ---------------------------------------------------------------------------
 # Several firewalls in one run (API mode). When non-empty, replaces the block above.
-# Keys: name (optional), type ("pfsense"/"opnsense"), url, token (pfSense),
-#       key + secret (OPNsense), interfaces (optional list), ciso_evidence_id (optional),
+# Keys: name (optional), type ("pfsense"/"opnsense"/"nfsensei"), url, token (pfSense / nfSensei API key),
+#       key + secret (OPNsense), interfaces (optional list), ciso_evidence_id and ciso_folder_id (optional),
 #       verify_ssl / ca_bundle (optional, override the TLS settings below),
 #       hits ("api" to read pfSense rule counters through the REST API command prompt,
 #             or a path to a "pfctl -vvsr" output file), hits_file (alias of the path form),
@@ -313,6 +313,9 @@ class Config:
         self.opns_url = f"{self.opns_base_url}/api/firewall/filter/search_rule"
         self.opns_key = target.get("key") or ""
         self.opns_secret = target.get("secret") or ""
+        self.api_key = target.get("token") or target.get("key") or ""  # nfSensei (X-API-Key)
+        # nfSensei: "running" (applied, default) or "candidate" (pending changes, not committed).
+        self.nfsensei_config = "candidate" if str(target.get("nfsensei_config")).lower() == "candidate" else "running"
         self.interfaces = list(interfaces_override or target.get("interfaces") or [])
 
         self.gateway_name = gateway_name_override or target.get("name")
@@ -328,7 +331,7 @@ class Config:
         self.ciso_url = expand_env(CISO_URL)
         self.ciso_token = expand_env(CISO_TOKEN)
         self.ciso_evidence_path = expand_env(CISO_EVIDENCE_PATH)
-        self.ciso_folder_id = expand_env(CISO_FORLDER_ID)
+        self.ciso_folder_id = target.get("ciso_folder_id") or expand_env(CISO_FORLDER_ID)
         self.ciso_evidence_id = target.get("ciso_evidence_id") or expand_env(CISO_EVIDENCE_ID)
 
         # TLS: CA bundle path, True or False (requests "verify" parameter).

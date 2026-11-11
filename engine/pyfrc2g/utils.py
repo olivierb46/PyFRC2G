@@ -292,3 +292,59 @@ def format_alias_label(value, default_label=None):
         return " ".join(parts)
 
     return default_label or value
+
+
+# ---------------------------------------------------------------------------
+# Parallel loading of several firewalls
+# ---------------------------------------------------------------------------
+
+THREAD_PREFIX = "fetch:"
+_prefix_installed = False
+
+
+def install_thread_prefix():
+    """Log records of the loading threads (named 'fetch:<firewall>') start with '[<firewall>] '."""
+    global _prefix_installed
+    if _prefix_installed:
+        return
+    import logging
+    import threading
+
+    previous = logging.getLogRecordFactory()
+
+    def factory(*args, **kwargs):
+        record = previous(*args, **kwargs)
+        name = threading.current_thread().name
+        if name.startswith(THREAD_PREFIX) and isinstance(record.msg, str):
+            record.msg = f"[{name[len(THREAD_PREFIX):]}] {record.msg}"
+        return record
+
+    logging.setLogRecordFactory(factory)
+    _prefix_installed = True
+
+
+def load_in_parallel(items, load, workers):
+    """
+    Run load(item) -> result for every item in up to `workers` threads (network bound: reading a
+    firewall API) and return the results in the order of items. An exception becomes the result.
+    load must not touch process-wide state (alias maps are installed again before the analysis).
+
+    items: [(name, payload)]; load receives the payload.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    install_thread_prefix()
+
+    def task(item):
+        name, payload = item
+        threading.current_thread().name = f"{THREAD_PREFIX}{name}"
+        try:
+            return load(payload)
+        except Exception as e:  # Reported by the caller, in order.
+            return e
+        finally:
+            threading.current_thread().name = "pyfrc2g-fetch"
+
+    with ThreadPoolExecutor(max_workers=max(1, int(workers)), thread_name_prefix="pyfrc2g-fetch") as pool:
+        return list(pool.map(task, items))

@@ -24,7 +24,7 @@ class RunReport:
     def __init__(self, gateway_name, gateway_type, source, generated_at, rules,
                  fingerprint="", source_fingerprint="", audit=None, changes=None, nat=None,
                  interfaces_filter=None, risk=None, matrix=None, hits=None, extra_meta=None,
-                 hits_note=None):
+                 hits_note=None, accepted=None):
         self.gateway_name = gateway_name
         self.gateway_type = gateway_type
         self.source = source
@@ -33,6 +33,7 @@ class RunReport:
         self.fingerprint = fingerprint
         self.source_fingerprint = source_fingerprint
         self.audit = audit or []
+        self.accepted = accepted or []  # Findings accepted by an exception (REASON, OWNER, EXPIRES).
         self.changes = changes  # None = no previous snapshot to compare with.
         self.nat = nat or []
         self.interfaces_filter = interfaces_filter
@@ -198,6 +199,9 @@ def write_summary_pdf(report, path, rows=None, interface=None):
         counts = count_by_severity(report.audit)
         story.append(_table(SEVERITIES, [[counts[s] for s in SEVERITIES]],
                             [width / len(SEVERITIES)] * len(SEVERITIES)))
+        if report.accepted:
+            story.append(_p(f"{len(report.accepted)} finding(s) accepted (justified risks, left out of the "
+                            "findings above and of the risk score): see the Accepted risks section.", st["body"]))
         story.append(Spacer(1, 12))
         story.append(_p("Changes since previous run", st["h2"]))
         if report.changes is None:
@@ -241,6 +245,17 @@ def write_audit_pdf(report, path):
     return _section_pdf(path, "Audit findings", AUDIT_FIELDNAMES, report.audit,
                         [0.07, 0.16, 0.11, 0.055, 0.075, 0.27, 0.26], "SEVERITY", SEVERITY_COLORS,
                         empty_text="No finding.")
+
+
+def write_accepted_pdf(report, path):
+    from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
+
+    if not report.accepted:
+        return None
+    return _section_pdf(path, "Accepted risks (left out of the audit findings and of the risk score)",
+                        ACCEPTED_FIELDNAMES, report.accepted,
+                        [0.06, 0.1, 0.09, 0.045, 0.06, 0.2, 0.15, 0.15, 0.08, 0.065],
+                        "SEVERITY", SEVERITY_COLORS)
 
 
 def write_nat_pdf(report, path):
