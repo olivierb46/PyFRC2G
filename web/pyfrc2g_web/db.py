@@ -128,7 +128,7 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn, self._local.depth = conn, 0
+            self._local.conn, self._local.depth, self._local.failed = conn, 0, False
         return _Transaction(self._local)
 
     # ------------------------------------------------------------------ meta / events
@@ -500,12 +500,15 @@ class _Transaction:
 
     def __exit__(self, exc_type, exc, tb):
         self.local.depth -= 1
+        if exc_type is not None:
+            self.local.failed = True  # an error in a nested block rolls back the whole transaction
         if self.local.depth:
             return False
+        failed, self.local.failed = self.local.failed, False
         conn = self.local.conn
         broken = exc_type is not None and issubclass(exc_type, sqlite3.Error)
         try:
-            if exc_type is None:
+            if not failed:
                 conn.commit()
             else:
                 conn.rollback()
