@@ -290,27 +290,34 @@ def write_matrix_pdf(report, path):
     st = _styles()
     width = _usable_width()
     destinations = matrix["destinations"]
-    header = [_p("From / To", st["head"])] + [_p(d, st["head"]) for d in destinations]
-    data, style = [header], [
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#9aa3af")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dfe3ea")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#dfe3ea")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]
-    for r, source in enumerate(matrix["sources"], start=1):
-        line = [_p(source, st["head"])]
-        for c, dest in enumerate(destinations, start=1):
-            status, detail = matrix["cells"].get((source, dest), ("", ""))
-            text = status if status in ("-", "ALLOWED", "BLOCKED") else f"{status}: {detail}"
-            line.append(_p(text[:220], st["cell"]))
-            if status in STATUS_COLORS:
-                style.append(("BACKGROUND", (c, r), (c, r), colors.HexColor(STATUS_COLORS[status])))
-        data.append(line)
     first = width * 0.14
-    other = (width - first) / max(1, len(destinations))
-    table = Table(data, colWidths=[first] + [other] * len(destinations), repeatRows=1)
-    table.setStyle(TableStyle(style))
-    story = [_p("Zone matrix (IPv4)", st["title"]), table, Spacer(1, 8),
+    # A wide matrix (hundreds of zones) cannot fit on a page: split the destination columns in
+    # blocks, each block repeating the source column.
+    per_block = 10
+    tables = []
+    for start in range(0, max(1, len(destinations)), per_block):
+        block = destinations[start:start + per_block]
+        header = [_p("From / To", st["head"])] + [_p(d, st["head"]) for d in block]
+        data, style = [header], [
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#9aa3af")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dfe3ea")),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#dfe3ea")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+        for r, source in enumerate(matrix["sources"], start=1):
+            line = [_p(source, st["head"])]
+            for c, dest in enumerate(block, start=1):
+                status, detail = matrix["cells"].get((source, dest), ("", ""))
+                text = status if status in ("-", "ALLOWED", "BLOCKED") else f"{status}: {detail}"
+                line.append(_p(text[:220], st["cell"]))
+                if status in STATUS_COLORS:
+                    style.append(("BACKGROUND", (c, r), (c, r), colors.HexColor(STATUS_COLORS[status])))
+            data.append(line)
+        other = (width - first) / len(block)
+        table = Table(data, colWidths=[first] + [other] * len(block), repeatRows=1)
+        table.setStyle(TableStyle(style))
+        tables.extend([table, Spacer(1, 10)])
+    story = [_p("Zone matrix (IPv4)", st["title"]), *tables, Spacer(1, 8),
              _p("ALLOWED: all traffic allowed by one rule; PARTIAL: only some hosts or services "
                 "(rule numbers and services listed, '?' = alias or interface not fully resolved); "
                 "BLOCKED: no pass rule; '-': same zone.", st["body"])]
