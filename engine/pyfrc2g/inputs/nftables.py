@@ -43,6 +43,7 @@ def _rule_id(rule, body):
 
 
 def _parse_expr(exprs):
+    """Reduce a rule's nft expression list to a flat spec (match fields, verdict, nat, counter)."""
     spec = {"negate": set(), "hits": None}
     for expr in exprs or []:
         if not isinstance(expr, dict):
@@ -103,6 +104,7 @@ def _addr(spec, key):
 
 
 def parse(path):
+    """Parse an nft JSON ruleset into (maps, entries, None, nat_entries)."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     items = data.get("nftables", []) if isinstance(data, dict) else []

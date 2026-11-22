@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Trends{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Trends</h1>
+<div class="sub">Evolution of each firewall over its stored analyses: risk score, findings and overly permissive rules (any → any checks).</div></div></div>
+<form class="filters-bar section" method="get">
+  <label for="f-fw">Firewall</label><select id="f-fw" name="firewall" data-autosubmit><option value="">All</option>{% for n in names %}<option {{ 'selected' if n == wanted }}>{{ n }}</option>{% endfor %}</select>
+  <label for="f-last">Analyses</label><select id="f-last" name="last" data-autosubmit>{% for n in (10, 30, 60, 120) %}<option value="{{ n }}" {{ 'selected' if n == limit }}>last {{ n }}</option>{% endfor %}</select>
+  <noscript><button class="btn small">Apply</button></noscript>
+</form>
+{% macro arrow(value, good_when_down=True) %}{% if value is none %}<span class="muted">—</span>{% elif value == 0 %}<span class="muted">=</span>{% else %}<span class="badge {{ 'ok' if (value < 0) == good_when_down else 'CRITICAL' }}">{{ '%+d' % value }}</span>{% endif %}{% endmacro %}
+{% for it in items %}
+<div class="card section">
+  <h2><a href="{{ url_for('main.gateway', name=it.gw.name, tab='history') }}">{{ it.gw.name }}</a>
+    <span class="muted small">{{ it.points|length }} analyses · {{ it.points[0].created[:10] }} → {{ it.last.created[:10] }}</span></h2>
+  <div class="grid cols-3">
+    <div><h3>Risk score {{ arrow(it.delta.score) }}</h3>{{ charts.value_line(it.points, 'score', 'Risk score', fixed_max=100) }}</div>
+    <div><h3>Findings {{ arrow(it.delta.findings) }}</h3>{{ charts.value_line(it.points, 'findings', 'Findings') }}</div>
+    <div><h3>Permissive rules {{ arrow(it.delta.permissive) }}</h3>{{ charts.value_line(it.points, 'permissive', 'Permissive rules') }}</div>
+  </div>
+  <div class="grid cols-3 mt">
+    <div><h3>Critical + high findings</h3>{{ charts.value_line(it.points, 'serious', 'Critical and high findings') }}</div>
+    <div><h3>Rules</h3>{{ charts.value_line(it.points, 'rules', 'Rules') }}</div>
+  </div>
+</div>
+{% else %}<div class="card empty">No analysis yet.</div>{% endfor %}
+{% endblock %}

@@ -6,7 +6,8 @@ Zones are the firewall interfaces (resolved through their networks, or symbolica
 rule uses the interface network itself, e.g. "LAN net"), plus "Firewall" (the firewall's own
 addresses) and "Internet" (anything outside the internal networks). IPv4 rules only;
 outbound rules are ignored, non-quick rules (pf last match) only decide when no quick rule
-matches. Only for pfSense / OPNsense / FortiGate (rules are attached to an ingress interface).
+matches. Only for pfSense / OPNsense / FortiGate / nfSensei (see PF_LIKE: rules are
+attached to an ingress interface).
 """
 
 from pyfrc2g import utils
@@ -149,9 +150,10 @@ def rules_for_interface(rules, gateway_type, interface):
 
 def build_matrix(rows, gateway_type):
     """
-    Returns:
-        dict or None: {"sources": [zone names], "destinations": [zone names],
-                       "cells": {(src, dst): (status, detail)}, "rows": [CSV rows]}
+    Build the zone matrix, or return None if the firewall type is unsupported or has no interface.
+
+    The result is {"sources": [zone names], "destinations": [zone names],
+    "cells": {(src, dst): (status, detail)}, "rows": [CSV rows]}.
     """
     if gateway_type not in PF_LIKE:
         return None

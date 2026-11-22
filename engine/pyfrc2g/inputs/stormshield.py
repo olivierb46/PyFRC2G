@@ -23,8 +23,6 @@ from pyfrc2g.utils import empty_maps
 
 _ACTIONS = {"pass": "pass", "block": "block", "drop": "block", "reset": "reject", "deny": "block"}
 _SECTION = re.compile(r"^\[(.+)\]$")
-_KEYWORDS = {"from", "to", "port", "ipproto", "proto", "on", "rulename", "type", "srcport",
-             "inspection", "noconnlog", "log", "all", "firewall", "ips", "ids", "state", "loglevel"}
 
 
 def _find_files(path):
@@ -88,6 +86,7 @@ def _parse_objects(path, maps):
 
 
 def _parse_line(line):
+    """Parse one filter line into a dict, or None if it is not a rule."""
     comment = ""
     if "#" in line:
         line, comment = line.split("#", 1)
@@ -118,6 +117,7 @@ def _parse_line(line):
 
 
 def parse(path):
+    """Parse a Stormshield filter policy into (maps, entries, None, [])."""
     filter_file, object_file = _find_files(path)
     maps = empty_maps()
     if object_file:

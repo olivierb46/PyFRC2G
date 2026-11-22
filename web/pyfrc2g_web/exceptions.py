@@ -4,7 +4,7 @@ expiry date. An accepted finding leaves the list of findings, the severity count
 score; it is kept in data["accepted"] with its justification. Once the expiry date has passed
 the finding counts again.
 
-An exception targets a check (e.g. WAN_ANY_ANY) on one firewall or on all of them, and either one
+An exception targets a check (e.g. ANY_ANY) on one firewall or on all of them, and either one
 rule (rule_key: the RULE ID, else the rule summary) or every rule of that check.
 """
 
@@ -15,16 +15,17 @@ SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 
 
 def engine_list(exceptions):
-    """Exceptions of the database in the format of the engine (--exceptions file)."""
+    """Return the approved exceptions in the engine format (as in the --exceptions file)."""
+    # Pending and rejected exceptions are not applied.
     return [{"check": e["check_name"], "rule": e.get("rule_key") or "", "gateway": e.get("gateway") or "",
              "reason": e["reason"], "owner": e.get("owner") or "", "expires": e.get("expires") or ""}
-            for e in exceptions]
+            for e in exceptions if e.get("status", "approved") == "approved"]
 
 
 def apply(data, exceptions, gateway, today=None):
     """
-    Split data["audit_all"] (every finding; data["audit"] the first time) into data["audit"]
-    (active) and data["accepted"], and recompute severities and risk. Returns data.
+    Split data["audit_all"] (every finding; seeded from data["audit"] on the first call) into
+    data["audit"] (active) and data["accepted"], and recompute severities and risk. Return data.
     """
     everything = data.get("audit_all")
     if everything is None:
@@ -43,8 +44,42 @@ def apply(data, exceptions, gateway, today=None):
     return data
 
 
+def expiring(exceptions, days, today=None):
+    """Return [(exception, days left)] for approved exceptions expiring within `days` days, soonest first."""
+    from datetime import date, timedelta
+
+    today = today or date.today()
+    limit = today + timedelta(days=days)
+    soon = []
+    for e in exceptions:
+        if e.get("status", "approved") != "approved" or not e.get("expires"):
+            continue
+        try:
+            expires = date.fromisoformat(str(e["expires"]))
+        except ValueError:
+            continue
+        if today <= expires <= limit:
+            soon.append((e, (expires - today).days))
+    return sorted(soon, key=lambda item: item[1])
+
+
+def remind(db, days, today=None):
+    """Emit an audit event (syslog / webhook) once per exception and expiry date. Return the number sent."""
+    sent = 0
+    for e, left in expiring(db.exceptions(), days, today):
+        key = f"risk_reminder:{e['id']}"
+        if db.get_meta(key) == str(e["expires"]):
+            continue
+        db.set_meta(key, str(e["expires"]))
+        db.add_event("system", "accepted risk expiring",
+                     f"{e['check_name']} on {e.get('gateway') or 'all firewalls'}: expires {e['expires']} "
+                     f"({left} day(s)), owner {e.get('owner') or '-'}, accepted by {e.get('username')}")
+        sent += 1
+    return sent
+
+
 def summary(data):
-    """Dashboard figures of an analysis."""
+    """Return the dashboard figures of an analysis."""
     return {"score": (data.get("risk") or {}).get("score"), "level": (data.get("risk") or {}).get("level"),
             "rules": len(data.get("rules") or []), "findings": len(data.get("audit") or []),
             "critical": (data.get("severities") or {}).get("CRITICAL", 0)}
@@ -87,7 +122,7 @@ def regeneration_sources(db, gateway_names=None):
 
 
 def regenerate(app, db, gateway_names, user_id):
-    """Queue the regeneration of the reports. Returns the run id, or None when nothing to do."""
+    """Queue the regeneration of the reports. Return the run id, or None when there is nothing to do."""
     sources = regeneration_sources(db, gateway_names)
     if not sources or getattr(app, "runner", None) is None:
         return None

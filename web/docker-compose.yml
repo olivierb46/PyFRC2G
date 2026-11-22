@@ -16,10 +16,57 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    networks: [default, sessions]
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false  # Only when the "redis" profile is enabled.
     volumes:
       - pyfrc2g-data:/data
       - ./pyfrc2g_web:/app/pyfrc2g-web/pyfrc2g_web:ro,z
       - ../engine/pyfrc2g:/app/pyfrc2g/pyfrc2g:ro,z
+
+  # Optional session store (OIDC sign-in). Enable it with, in .env:
+  #   COMPOSE_PROFILES=redis
+  #   PYFRC2G_REDIS_URL=redis://pyfrc2g@redis:6379/0
+  #   PYFRC2G_REDIS_PASSWORD=<long random value>
+  # Reachable only from the web container (internal network, no published port), authenticated, the
+  # "default" user disabled, a single ACL user limited to session:* and throttle:* keys without admin / dangerous
+  # commands (no CONFIG, FLUSHALL, KEYS, DEBUG...), nothing written to disk.
+  redis:
+    image: redis:7.4-alpine
+    profiles: [redis]
+    restart: unless-stopped
+    user: "999"
+    networks: [sessions]
+    environment:
+      REDIS_PASSWORD: ${PYFRC2G_REDIS_PASSWORD:-}
+      REDISCLI_AUTH: ${PYFRC2G_REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - >-
+        [ -n "$$REDIS_PASSWORD" ] || { echo "set PYFRC2G_REDIS_PASSWORD in .env" >&2; exit 1; };
+        exec redis-server --save "" --appendonly no --maxmemory 128mb --maxmemory-policy volatile-lru
+        --user default off --user pyfrc2g on ">$$REDIS_PASSWORD" "~session:*" "~throttle:*" +@all -@admin -@dangerous
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --user pyfrc2g ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /data:mode=1777  # No uid=: podman refuses it; the container is private and read-only elsewhere.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 100
+
+networks:
+  default:
+  sessions:
+    internal: true  # No route to the outside.
 
 volumes:
   pyfrc2g-data:

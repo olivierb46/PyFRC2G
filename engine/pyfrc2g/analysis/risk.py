@@ -39,9 +39,10 @@ def level(value):
 
 def compute(findings, weights=None, history_path=None, generated_at=""):
     """
-    Returns:
-        dict: {"score", "level", "previous", "delta", "by_interface": {iface: score},
-               "history": [{"date", "score"}...]}
+    Compute the risk score of findings and update the history file when history_path is given.
+
+    The result is {"score", "level", "previous", "delta", "by_interface": {iface: score},
+    "history": [{"date", "score", "by_interface"}...]}; previous and delta are None on the first run.
     """
     by_iface = {}
     for finding in findings:
@@ -75,7 +76,7 @@ def compute(findings, weights=None, history_path=None, generated_at=""):
 
 
 def describe(risk):
-    """'42/100 (HIGH, +5 since previous run)'."""
+    """Return a short text such as '42/100 (HIGH, +5 since previous run)'."""
     if not risk:
         return ""
     text = f"{risk['score']}/100 ({risk['level']}"

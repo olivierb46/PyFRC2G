@@ -6,9 +6,11 @@ scores) used for listing and sorting.
 
 import contextlib
 import json
+import logging
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime
 
 from pyfrc2g_web.crypto import Cipher
@@ -18,7 +20,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT, value_enc BLOB);
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'viewer')), created TEXT, last_login TEXT);
+    role TEXT NOT NULL, created TEXT, last_login TEXT);  -- roles are validated by the application
 CREATE TABLE IF NOT EXISTS firewalls (
     id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, type TEXT NOT NULL, enabled INTEGER NOT NULL,
     config_enc BLOB NOT NULL, created TEXT, updated TEXT);
@@ -50,13 +52,35 @@ CREATE TABLE IF NOT EXISTS exceptions (
     id INTEGER PRIMARY KEY, gateway TEXT, check_name TEXT NOT NULL, rule_key TEXT, reason_enc BLOB,
     owner TEXT, expires TEXT, created TEXT, username TEXT);
 CREATE INDEX IF NOT EXISTS ciso_uploads_gateway ON ciso_uploads(gateway, id);
+CREATE TABLE IF NOT EXISTS user_sessions (
+    token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created TEXT, last_seen TEXT, address TEXT, agent TEXT);
+CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions(user_id);
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    target_enc BLOB NOT NULL, secret_enc BLOB, events TEXT, detail TEXT, scope TEXT, created TEXT, username TEXT);
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, format TEXT, frequency TEXT, weekday INTEGER,
+    monthday INTEGER, hour INTEGER, recipients_enc BLOB NOT NULL, site TEXT, tag TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1, last_sent TEXT, created TEXT, username TEXT);
 """
-# Columns that update_run() may write (names are interpolated in the SQL).
+# users table of the first releases: role restricted to ('admin', 'viewer') by a CHECK constraint.
+USERS_V2 = ("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, "
+            "password_hash TEXT NOT NULL, role TEXT NOT NULL, created TEXT, last_login TEXT)")
+# Columns update_run() may write (the names are interpolated into the SQL).
 RUN_COLUMNS = frozenset({"kind", "label", "status", "user_id", "queued", "started", "finished",
                          "exit_code", "gateways", "log_enc"})
 # Columns added after the first release: (table, column, definition).
 MIGRATIONS = (("gateways", "ciso_evidence_id", "TEXT"), ("gateways", "ciso_folder_id", "TEXT"),
-              ("gateways", "options_enc", "BLOB"))
+              ("gateways", "options_enc", "BLOB"),
+              # Firewall scope of a user: JSON {"sites": [], "tags": [], "firewalls": []}, NULL = all.
+              ("users", "scope", "TEXT"),
+              # Accepted risks: approval workflow (existing rows stay approved).
+              ("exceptions", "status", "TEXT NOT NULL DEFAULT 'approved'"),
+              ("exceptions", "approver", "TEXT"), ("exceptions", "decided", "TEXT"),
+              # Figures of each analysis for the trends (filled by backfill_analysis_stats for old rows).
+              ("analyses", "rules", "INTEGER"), ("analyses", "findings", "INTEGER"),
+              ("analyses", "critical", "INTEGER"), ("analyses", "high", "INTEGER"),
+              ("analyses", "permissive", "INTEGER"))
 
 DEFAULT_SETTINGS = {
     "schedule": "",
@@ -87,6 +111,8 @@ DEFAULT_SETTINGS = {
     "ciso_changes_evidence_id": "",
     # Compliance policies applied on top of the global one: [{"kind": "site"|"tag", "name", "policy"}].
     "scoped_policies": [],
+    # Notifications: a risk score rise of at least this many points is a "drift" (see notify.py).
+    "notify_drift": 10,
 }
 
 
@@ -94,8 +120,27 @@ def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+PERMISSIVE_CHECK = "ANY_ANY"  # Engine check: pass rule from any source to any destination.
+STATS_VERSION = "2"  # Bump to recompute the stored figures of the analyses (see backfill_analysis_stats).
+
+
+def is_permissive(finding):
+    """True for the finding of an any -> any rule (exact check name: policy ids may contain "ANY")."""
+    return (finding.get("CHECK") or "") == PERMISSIVE_CHECK
+
+
+def analysis_stats(data):
+    """Return (rules, findings, critical, high, permissive) of an analysis."""
+    audit = data.get("audit") or []
+    severities = data.get("severities") or {}
+    return (len(data.get("rules") or []), len(audit), severities.get("CRITICAL", 0), severities.get("HIGH", 0),
+            sum(1 for f in audit if is_permissive(f)))
+
+
 class Database:
-    """Data access layer; one reused connection per thread (opening one is slow on NFS)."""
+    """Data access layer; one connection is reused per thread (opening one is slow on NFS)."""
+
+    on_event = None  # Optional callable(dict) called with each audit event (syslog / webhook, see audit.py).
 
     def __init__(self, path, data_dir):
         self.path = path
@@ -104,6 +149,13 @@ class Database:
         with self._conn() as c:
             c.executescript(SCHEMA)
             c.execute("PRAGMA journal_mode=WAL")
+            users_sql = c.execute("SELECT sql FROM sqlite_master WHERE name='users'").fetchone()[0]
+            if "CHECK" in users_sql:  # Rebuild a legacy users table whose CHECK forbids the operator / auditor roles.
+                c.execute("ALTER TABLE users RENAME TO users_old")
+                c.execute(USERS_V2)
+                c.execute("INSERT INTO users (id, username, password_hash, role, created, last_login) "
+                          "SELECT id, username, password_hash, role, created, last_login FROM users_old")
+                c.execute("DROP TABLE users_old")
             for table, column, definition in MIGRATIONS:
                 if column not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:
                     c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -144,9 +196,15 @@ class Database:
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
     def add_event(self, username, action, detail=""):
+        record = {"time": now(), "username": username or "-", "action": action, "detail": detail}
         with self._conn() as c:
             c.execute("INSERT INTO events (time, username, action, detail) VALUES (?, ?, ?, ?)",
-                      (now(), username or "-", action, detail))
+                      (record["time"], record["username"], action, detail))
+        if self.on_event:
+            try:
+                self.on_event(record)
+            except Exception:  # An unreachable SIEM must never break the application.
+                logging.exception("audit export failed")
 
     def events(self, limit=300):
         with self._conn() as c:
@@ -170,7 +228,7 @@ class Database:
 
     def users(self):
         with self._conn() as c:
-            return [dict(r) for r in c.execute("SELECT id, username, role, created, last_login FROM users "
+            return [dict(r) for r in c.execute("SELECT id, username, role, scope, created, last_login FROM users "
                                                "ORDER BY username")]
 
     def create_user(self, username, password_hash, role):
@@ -179,16 +237,68 @@ class Database:
                             (username, password_hash, role, now()))
             return cur.lastrowid
 
-    def update_user(self, user_id, role=None, password_hash=None):
+    def update_user(self, user_id, role=None, password_hash=None, scope=False):
+        """scope: dict (restriction), None (all firewalls) or False (unchanged)."""
         with self._conn() as c:
             if role:
                 c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
             if password_hash:
                 c.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+            if scope is not False:
+                c.execute("UPDATE users SET scope=? WHERE id=?", (json.dumps(scope) if scope else None, user_id))
 
     def delete_user(self, user_id):
         with self._conn() as c:
             c.execute("DELETE FROM users WHERE id=?", (user_id,))
+            c.execute("DELETE FROM user_sessions WHERE user_id=?", (user_id,))
+
+    # ------------------------------------------------------------------ sign-in sessions
+
+    def add_session(self, token, user_id, address, agent, max_age, limit=0):
+        """Register a session; expired ones are dropped and, with a limit, the oldest ones are revoked."""
+        cutoff = datetime.fromtimestamp(time.time() - max_age).strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn() as c:
+            c.execute("DELETE FROM user_sessions WHERE last_seen < ?", (cutoff,))
+            c.execute("INSERT INTO user_sessions (token, user_id, created, last_seen, address, agent) "
+                      "VALUES (?, ?, ?, ?, ?, ?)", (token, user_id, now(), now(), address, (agent or "")[:200]))
+            if limit:
+                c.execute("DELETE FROM user_sessions WHERE user_id=? AND token NOT IN (SELECT token FROM "
+                          "user_sessions WHERE user_id=? ORDER BY created DESC, rowid DESC LIMIT ?)",
+                          (user_id, user_id, limit))
+
+    def session_alive(self, token, touch_after=60):
+        """True if the session was not revoked; last_seen is refreshed at most every touch_after seconds."""
+        with self._conn() as c:
+            row = c.execute("SELECT last_seen FROM user_sessions WHERE token=?", (token,)).fetchone()
+            if row is None:
+                return False
+            try:
+                age = time.time() - datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").timestamp()
+            except (TypeError, ValueError):
+                age = touch_after
+            if age >= touch_after:
+                c.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (now(), token))
+        return True
+
+    def sessions(self, user_id=None):
+        query = ("SELECT s.token, s.user_id, s.created, s.last_seen, s.address, s.agent, u.username "
+                 "FROM user_sessions s LEFT JOIN users u ON u.id = s.user_id")
+        with self._conn() as c:
+            if user_id is not None:
+                rows = c.execute(query + " WHERE s.user_id=? ORDER BY s.last_seen DESC", (user_id,))
+            else:
+                rows = c.execute(query + " ORDER BY s.last_seen DESC")
+            return [dict(r) for r in rows]
+
+    def delete_sessions(self, token=None, user_id=None, except_token=None):
+        """Revoke one session (token), or every session of a user (except_token kept). Returns the count."""
+        with self._conn() as c:
+            if token is not None:
+                cur = c.execute("DELETE FROM user_sessions WHERE token=?", (token,))
+            else:
+                cur = c.execute("DELETE FROM user_sessions WHERE user_id=? AND token IS NOT ?",
+                                (user_id, except_token))
+            return cur.rowcount
 
     def touch_login(self, user_id):
         with self._conn() as c:
@@ -237,6 +347,79 @@ class Database:
                 c.execute("INSERT INTO settings (key, value_enc) VALUES (?, ?) "
                           "ON CONFLICT(key) DO UPDATE SET value_enc=excluded.value_enc",
                           (key, self.cipher.encrypt_json(value)))
+
+    # ------------------------------------------------------------------ notifications
+
+    def _channel(self, row):
+        channel = dict(row)
+        channel["target"] = self.cipher.decrypt(channel.pop("target_enc")).decode()
+        secret = channel.pop("secret_enc")
+        channel["secret"] = self.cipher.decrypt(secret).decode() if secret else ""
+        channel["events"] = [e for e in (channel["events"] or "").split(",") if e]
+        channel["scope"] = json.loads(channel["scope"]) if channel["scope"] else None
+        return channel
+
+    def channels(self, enabled_only=False):
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM notification_channels " + ("WHERE enabled=1 " if enabled_only else "")
+                             + "ORDER BY name").fetchall()
+        return [self._channel(r) for r in rows]
+
+    def channel(self, channel_id):
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM notification_channels WHERE id=?", (channel_id,)).fetchone()
+        return self._channel(row) if row else None
+
+    def add_channel(self, name, kind, target, secret, events, detail, scope, username):
+        with self._conn() as c:
+            return c.execute(
+                "INSERT INTO notification_channels (name, kind, target_enc, secret_enc, events, detail, scope, "
+                "created, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, kind, self.cipher.encrypt(target), self.cipher.encrypt(secret) if secret else None,
+                 ",".join(events), detail, json.dumps(scope) if scope else None, now(), username)).lastrowid
+
+    def set_channel_enabled(self, channel_id, enabled):
+        with self._conn() as c:
+            c.execute("UPDATE notification_channels SET enabled=? WHERE id=?", (int(enabled), channel_id))
+
+    def delete_channel(self, channel_id):
+        with self._conn() as c:
+            c.execute("DELETE FROM notification_channels WHERE id=?", (channel_id,))
+
+    def _schedule(self, row):
+        schedule = dict(row)
+        schedule["recipients"] = json.loads(self.cipher.decrypt(schedule.pop("recipients_enc")).decode())
+        return schedule
+
+    def schedules(self):
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM report_schedules ORDER BY name").fetchall()
+        return [self._schedule(r) for r in rows]
+
+    def schedule(self, schedule_id):
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM report_schedules WHERE id=?", (schedule_id,)).fetchone()
+        return self._schedule(row) if row else None
+
+    def add_schedule(self, name, fmt, frequency, weekday, monthday, hour, recipients, site, tag, username):
+        with self._conn() as c:  # last_sent = now: only the next slot sends, never a past one.
+            return c.execute(
+                "INSERT INTO report_schedules (name, format, frequency, weekday, monthday, hour, recipients_enc, "
+                "site, tag, last_sent, created, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, fmt, frequency, weekday, monthday, hour, self.cipher.encrypt(json.dumps(recipients)),
+                 site, tag, now(), now(), username)).lastrowid
+
+    def set_schedule_enabled(self, schedule_id, enabled):
+        with self._conn() as c:
+            c.execute("UPDATE report_schedules SET enabled=? WHERE id=?", (int(enabled), schedule_id))
+
+    def mark_schedule_sent(self, schedule_id, when=None):
+        with self._conn() as c:
+            c.execute("UPDATE report_schedules SET last_sent=? WHERE id=?", (when or now(), schedule_id))
+
+    def delete_schedule(self, schedule_id):
+        with self._conn() as c:
+            c.execute("DELETE FROM report_schedules WHERE id=?", (schedule_id,))
 
     # ------------------------------------------------------------------ uploads
 
@@ -353,11 +536,12 @@ class Database:
     def add_analysis(self, gateway_id, run_id, data, artifacts):
         """Store an analysis (data dict) and its files [(name, mime, bytes)]."""
         risk = data.get("risk") or {}
+        stats = analysis_stats(data)
         with self._conn() as c:
-            cur = c.execute("INSERT INTO analyses (gateway_id, run_id, created, score, level, fingerprint, data_enc) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            cur = c.execute("INSERT INTO analyses (gateway_id, run_id, created, score, level, fingerprint, data_enc, "
+                            "rules, findings, critical, high, permissive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (gateway_id, run_id, now(), risk.get("score"), risk.get("level"),
-                             data.get("fingerprint"), self.cipher.encrypt_json(data)))
+                             data.get("fingerprint"), self.cipher.encrypt_json(data), *stats))
             analysis_id = cur.lastrowid
             c.executemany("INSERT INTO artifacts (analysis_id, name, mime, size, content_enc) VALUES (?, ?, ?, ?, ?)",
                           [(analysis_id, name, mime, len(content), self.cipher.encrypt(content))
@@ -402,8 +586,34 @@ class Database:
         """Replace the data of a stored analysis (accepted risks re-evaluated)."""
         risk = data.get("risk") or {}
         with self._conn() as c:
-            c.execute("UPDATE analyses SET score=?, level=?, data_enc=? WHERE id=?",
-                      (risk.get("score"), risk.get("level"), self.cipher.encrypt_json(data), analysis_id))
+            c.execute("UPDATE analyses SET score=?, level=?, data_enc=?, rules=?, findings=?, critical=?, high=?, "
+                      "permissive=? WHERE id=?",
+                      (risk.get("score"), risk.get("level"), self.cipher.encrypt_json(data), *analysis_stats(data),
+                       analysis_id))
+
+    def trend(self, gateway_id, limit=120):
+        """Figures of the last analyses of a firewall, oldest first (clear columns, no decryption)."""
+        with self._conn() as c:
+            rows = c.execute("SELECT id, created, score, rules, findings, critical, high, permissive FROM analyses "
+                             "WHERE gateway_id=? ORDER BY id DESC LIMIT ?", (gateway_id, limit)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def backfill_analysis_stats(self):
+        """Compute the figures of the analyses stored before the trends existed, or with an older definition
+        of "permissive" (all of them once, when STATS_VERSION changes). Returns the number of rows."""
+        stale = self.get_meta("stats_version") != STATS_VERSION
+        with self._conn() as c:
+            ids = [r[0] for r in c.execute("SELECT id FROM analyses" + ("" if stale else " WHERE findings IS NULL"))]
+        for analysis_id in ids:
+            with self._conn() as c:
+                row = c.execute("SELECT data_enc FROM analyses WHERE id=?", (analysis_id,)).fetchone()
+                if row is None:
+                    continue
+                data = self.cipher.decrypt_json(row[0], {})
+                c.execute("UPDATE analyses SET rules=?, findings=?, critical=?, high=?, permissive=? WHERE id=?",
+                          (*analysis_stats(data), analysis_id))
+        self.set_meta("stats_version", STATS_VERSION)
+        return len(ids)
 
     def update_gateway_summary(self, gateway_id, summary):
         with self._conn() as c:
@@ -413,20 +623,31 @@ class Database:
 
     # ------------------------------------------------------------------ accepted risks
 
-    def exceptions(self):
+    def exceptions(self, status=None):
         with self._conn() as c:
-            rows = [dict(r) for r in c.execute("SELECT * FROM exceptions ORDER BY id DESC")]
+            if status:
+                rows = [dict(r) for r in c.execute("SELECT * FROM exceptions WHERE status=? ORDER BY id DESC",
+                                                   (status,))]
+            else:
+                rows = [dict(r) for r in c.execute("SELECT * FROM exceptions ORDER BY id DESC")]
         for row in rows:
             row["reason"] = self.cipher.decrypt_json(row.pop("reason_enc"), "") if row.get("reason_enc") else ""
         return rows
 
-    def add_exception(self, gateway, check, rule_key, reason, owner, expires, username):
+    def add_exception(self, gateway, check, rule_key, reason, owner, expires, username, approver=None):
+        """Accepted risk. With an approver it is approved at once, otherwise it waits for a decision."""
         with self._conn() as c:
             cur = c.execute("INSERT INTO exceptions (gateway, check_name, rule_key, reason_enc, owner, expires, "
-                            "created, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            "created, username, status, approver, decided) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (gateway or None, check, rule_key or None, self.cipher.encrypt_json(reason),
-                             owner, expires or None, now(), username))
+                             owner, expires or None, now(), username, "approved" if approver else "pending",
+                             approver, now() if approver else None))
             return cur.lastrowid
+
+    def decide_exception(self, exception_id, approve, approver):
+        with self._conn() as c:
+            c.execute("UPDATE exceptions SET status=?, approver=?, decided=? WHERE id=? AND status='pending'",
+                      ("approved" if approve else "rejected", approver, now(), exception_id))
 
     def delete_exception(self, exception_id):
         with self._conn() as c:
@@ -473,17 +694,32 @@ class Database:
                             "WHERE r.id=?", (run_id,)).fetchone()
         return self._run_row(row, with_log=True) if row else None
 
-    def runs(self, limit=100, gateway=None):
-        with self._conn() as c:
-            rows = c.execute("SELECT r.*, u.username FROM runs r LEFT JOIN users u ON u.id = r.user_id "
-                             "ORDER BY r.id DESC LIMIT ?", (limit * (5 if gateway else 1),)).fetchall()
-        runs = [self._run_row(r) for r in rows]
-        if gateway:
-            runs = [r for r in runs if gateway in r["gateways"]][:limit]
-        return runs
+    def runs(self, limit=100, gateway=None, accept=None, scan=5000):
+        """Return the latest runs, newest first, that involve `gateway` and satisfy accept(run).
+
+        Reads by batches until `limit` runs match, looking at `scan` runs at most.
+        """
+        found, last_id, batch = [], None, max(limit * 3, 50)
+        looked = 0
+        while len(found) < limit and looked < scan:
+            with self._conn() as c:
+                rows = c.execute("SELECT r.*, u.username FROM runs r LEFT JOIN users u ON u.id = r.user_id "
+                                 "WHERE (? IS NULL OR r.id < ?) ORDER BY r.id DESC LIMIT ?",
+                                 (last_id, last_id, batch)).fetchall()
+            if not rows:
+                break
+            looked += len(rows)
+            last_id = rows[-1]["id"]
+            for row in rows:
+                run = self._run_row(row)
+                if (not gateway or gateway in run["gateways"]) and (accept is None or accept(run)):
+                    found.append(run)
+                    if len(found) == limit:
+                        break
+        return found
 
     def fail_unfinished_runs(self):
-        """Runs left 'queued' / 'running' by a stopped server."""
+        """Mark runs left 'queued' / 'running' by a stopped server as failed."""
         with self._conn() as c:
             c.execute("UPDATE runs SET status='failed', finished=? WHERE status IN ('queued', 'running')", (now(),))
 

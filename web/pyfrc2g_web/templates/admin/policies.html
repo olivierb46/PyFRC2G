@@ -4,8 +4,8 @@
 {% macro form(item, index) %}
 <form method="post">{{ csrf() }}<input type="hidden" name="index" value="{{ index if index is not none else '' }}">
   <div class="grid cols-3">
-    <div><label>Applies to</label><select name="kind"><option value="site" {{ 'selected' if item and item.kind == 'site' }}>Site</option><option value="tag" {{ 'selected' if item and item.kind == 'tag' }}>Tag</option></select></div>
-    <div><label>Name of the site or tag</label><input type="text" name="name" list="scope-names" maxlength="64" value="{{ item.name if item else '' }}" required></div>
+    <div><label for="p_kind">Applies to</label><select id="p_kind" name="kind"><option value="site" {{ 'selected' if item and item.kind == 'site' }}>Site</option><option value="tag" {{ 'selected' if item and item.kind == 'tag' }}>Tag</option></select></div>
+    <div><label for="p_name">Name of the site or tag</label><input type="text" id="p_name" name="name" list="scope-names" maxlength="64" value="{{ item.name if item else '' }}" required></div>
   </div>
   <label>Policy (YAML)</label>
   <textarea class="tall" name="policy" spellcheck="false" placeholder="policies:&#10;  - id: no-rdp-from-wan&#10;    severity: CRITICAL&#10;    match: {interface: wan, action: pass, port: 3389}" required>{{ item.policy if item else '' }}</textarea>

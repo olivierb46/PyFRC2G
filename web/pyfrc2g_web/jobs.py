@@ -1,5 +1,5 @@
 """
-Analyses of the web application.
+Run analyses for the web application: background runner, scheduler and the per-source pipeline.
 
 Each analysis runs the regular pipeline (pipeline.process_firewall) in a private temporary
 directory: the state of the previous run (rules snapshot, risk and hit counter history,
@@ -89,9 +89,9 @@ NFSENSEI_CONFIG_NAMES = ("running.yaml", "config.yaml.lkg")
 
 def slim_upload(filename, content):
     """
-    A full nfSensei backup archive (the whole /etc/nfsensei folder, hundreds of MB, with API key
+    Reduce a full nfSensei backup archive (the whole /etc/nfsensei folder, hundreds of MB, with API key
     hashes and certificates) is reduced to its running.yaml before being stored. Anything else is
-    returned unchanged. Returns (filename, content).
+    returned unchanged. Return (filename, content).
     """
     import io
 
@@ -301,7 +301,7 @@ def _matrix_from_rows(rows):
 
 
 def _render_svgs(config, rows, work):
-    """Zones view and one rules graph per interface, as SVG (for the browser)."""
+    """Render the zones view and one rules graph per interface as SVG (for the browser)."""
     from pyfrc2g.model.rules import interface_of
     from pyfrc2g.outputs.graphs import GraphGenerator
 
@@ -328,7 +328,7 @@ def _render_svgs(config, rows, work):
 
 
 def _build_analysis(config, gateway_dir, host, source_label, run_id):
-    """Data shown by the application + artifacts (reports, CSV, SVG graphs)."""
+    """Return (data shown by the application, artifacts such as reports, CSV and SVG graphs)."""
     from pyfrc2g.analysis.risk import level
     from pyfrc2g.model.rules import interface_stats
 
@@ -412,7 +412,15 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
     elif opts is not None:  # The firewall settings hold its CISO Assistant evidence and folder.
         db.set_gateway_evidence(gateway_id, opts["ciso_evidence_id"], opts["ciso_folder_id"])
     if data is not None:
+        before = db.analyses(gateway_id)
+        previous = db.analysis(before[0]["id"])["data"] if before else None  # For the alerts (notify.py).
         analysis_id = db.add_analysis(gateway_id, run_id, data, artifacts)
+        if previous is not None and getattr(db, "notifier", None) is not None:
+            from pyfrc2g_web import access, notify
+
+            labels = next(({"site": gw["site"], "tags": gw["tags"]} for gw in access.labelled_gateways(db)
+                           if gw["name"] == host), {})
+            notify.analysis_alert(db, previous, data, host, labels)
         db.prune_analyses(gateway_id, (opts or {}).get("retention") or settings.get("retention", 30))
         logging.info(f"✓ Analysis of {host} stored ({len(artifacts)} files, encrypted)")
         if fwopts.ciso_auto(opts, settings) if opts else settings.get("ciso_auto"):
@@ -453,7 +461,7 @@ def _load_api_source(db, settings, source, work):
 
 def _prefetch(state, settings, sources):
     """
-    Reads the API firewalls of a run in parallel (settings: parallel_fetch). Returns
+    Read the API firewalls of a run in parallel (setting parallel_fetch). Return
     {source index: (work dir, (firewall, opts, args, loaded) | JobError)}; the analyses and the
     reports stay sequential, as the analysis modules share process-wide state.
     """
@@ -487,8 +495,8 @@ def _prefetch(state, settings, sources):
 
 def run_analysis(state, run_id, sources):
     """
-    sources: [{"kind": "api", "firewall_id": id}] / [{"kind": "upload", "upload_id": id}].
-    Returns an exit code (0 = every source analysed).
+    Analyse each source: {"kind": "api", "firewall_id": id}, {"kind": "upload", "upload_id": id}
+    or {"kind": "ciso", "analysis_id": id}. Return an exit code (0 = every source succeeded).
     """
     db = state["db"]
     settings = db.settings()
@@ -504,6 +512,23 @@ def run_analysis(state, run_id, sources):
     finally:
         for work, _ in prefetched.values():
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _notify_failure(db, source, error):
+    """Alert the channels subscribed to failed analyses (best effort, never raises)."""
+    try:
+        notifier = getattr(db, "notifier", None)
+        if notifier is None:
+            return
+        from pyfrc2g_web import access
+
+        firewall = db.firewall(source["firewall_id"]) if source.get("firewall_id") else None
+        name = (firewall or {}).get("name") or source.get("name") or "file upload"
+        labels = next(({"site": gw["site"], "tags": gw["tags"]} for gw in access.labelled_gateways(db)
+                       if gw["name"] == name), {})
+        notifier.failure(name, str(error)[:200], labels)
+    except Exception:
+        logging.exception("notification of a failed analysis")
 
 
 def _run_sources(state, run_id, sources, settings, prefetched, exit_code, gateways):
@@ -573,6 +598,7 @@ def _run_sources(state, run_id, sources, settings, prefetched, exit_code, gatewa
         except JobError as e:
             logging.error(str(e))
             exit_code = 1
+            _notify_failure(db, source, e)
         finally:
             shutil.rmtree(work, ignore_errors=True)
     return exit_code
@@ -593,7 +619,7 @@ class _Capture(logging.Handler):
 
 
 class Runner:
-    """Executes queued analyses one by one in a background thread."""
+    """Execute queued analyses one by one in a background thread."""
 
     def __init__(self, db, tmp_dir):
         self.db = db
@@ -633,14 +659,15 @@ class Runner:
 
 class Scheduler:
     """
-    Every minute: queue an analysis of the enabled API firewalls that are due. Each firewall
+    Every minute, queue an analysis of the enabled API firewalls that are due. Each firewall
     follows its own interval (firewall settings) or the global schedule, or is analysed manually
     only; the last scheduled analysis of each firewall is kept in the meta table.
     """
 
-    def __init__(self, db, runner):
+    def __init__(self, db, runner, reminder_days=14):
         self.db = db
         self.runner = runner
+        self.reminder_days = reminder_days
         threading.Thread(target=self._loop, name="pyfrc2g-scheduler", daemon=True).start()
 
     def _last(self, firewall_id):
@@ -678,4 +705,28 @@ class Scheduler:
                                        [{"kind": "api", "firewall_id": fid} for fid in due])
             except Exception as e:
                 logging.error(f"Scheduler error: {e}")
+            self._remind()
+            self._reports()
             time.sleep(60)
+
+    def _reports(self):
+        """Send the scheduled e-mail reports that are due (see notify.run_reports)."""
+        try:
+            from pyfrc2g_web import notify
+
+            notify.run_reports(self.db)
+        except Exception as e:
+            logging.error(f"Scheduled report error: {e}")
+
+    def _remind(self):
+        """Once a day: audit event for the accepted risks about to expire (reaches the SIEM / webhook)."""
+        try:
+            today = time.strftime("%Y-%m-%d")
+            if self.db.get_meta("risk_reminder_day") == today:
+                return
+            from pyfrc2g_web import exceptions
+
+            self.db.set_meta("risk_reminder_day", today)
+            exceptions.remind(self.db, self.reminder_days)
+        except Exception as e:
+            logging.error(f"Accepted-risk reminder error: {e}")

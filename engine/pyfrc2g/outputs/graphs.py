@@ -1,9 +1,8 @@
 """
-Graph generation module for PyFRC2G.
+Graphviz graphs of the firewall rules (per gateway) and of the zone flows.
 
-Graphs are rendered by Graphviz directly to PDF (vector, searchable text). The raster
-mode (PNG placed on an A4 page) is kept as an option and as a fallback when the local
-Graphviz build has no PDF output.
+Graphs are rendered directly to PDF (vector, searchable text). Raster mode (PNG placed on
+an A4 page) is an option and the fallback when the local Graphviz build has no PDF output.
 """
 
 import html
@@ -30,7 +29,7 @@ FONT = "Helvetica,Arial,sans-serif"
 
 
 def _clean_label(s, default=UNKNOWN_LABEL):
-    """Return label with angle brackets removed, or default if empty."""
+    """Return the label without angle brackets, or default if it is empty."""
     if not s:
         return default
     return str(s).replace("<", "").replace(">", "").strip() or default
@@ -46,8 +45,9 @@ def _escape_record_text(text):
 def record_label(fields, width=LABEL_WRAP_WIDTH):
     """
     Build a Graphviz record label from a list of fields.
-    Each field is wrapped independently and escaped, so user data (comments, aliases)
-    containing '|', '{', '<'... cannot break the record layout.
+
+    Each field is wrapped and escaped independently, so user data (comments, aliases)
+    containing '|', '{', '<' cannot break the record layout.
     """
     rendered = []
     for field in fields:
@@ -65,7 +65,7 @@ def _plain_label(lines, width=LABEL_WRAP_WIDTH):
 
 
 class GraphGenerator:
-    """Graph generator for firewall rules."""
+    """Build and render the rules and zone graphs."""
 
     def __init__(self, config, raster=False, svg=False):
         """raster: PNG pages instead of vector PDF; svg: SVG files (web application)."""
@@ -172,12 +172,7 @@ class GraphGenerator:
         return flows_by_gateway
 
     def render_rule_graphs(self, rows, work_dir, interface_filter=None):
-        """
-        Render one rules graph per gateway/interface.
-
-        Returns:
-            list: (bookmark title, pdf path) for each graph.
-        """
+        """Render one rules graph per gateway and return a list of (bookmark title, path) tuples."""
         os.makedirs(work_dir, exist_ok=True)
         pages = []
         for gateway, sources in self._build_flows(rows, interface_filter).items():
@@ -202,11 +197,10 @@ class GraphGenerator:
 
     def render_zone_graph(self, rows, work_dir, title):
         """
-        Network-centric view: one node per source/destination, one edge per
-        (source, destination, action) aggregating protocols/ports and interfaces.
+        Render the network-centric view: one node per source/destination, one edge per
+        (source, destination, action, disabled) aggregating interfaces, protocols and ports.
 
-        Returns:
-            tuple: (bookmark title, pdf path), or None if there is no rule.
+        Return (bookmark title, path), or None if there are no rules.
         """
         if not rows:
             return None

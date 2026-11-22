@@ -3,6 +3,7 @@ Command line of PyFRC2G-Web.
 
     pyfrc2g-web [--host 0.0.0.0] [--port 8080] [--data-dir DIR] [--every 6h]
     pyfrc2g-web --create-admin NAME
+    pyfrc2g-web --restore-backup FILE [--force]     (application stopped)
 """
 
 import argparse
@@ -43,10 +44,31 @@ def parse_args(argv=None):
     parser.add_argument("--create-admin", metavar="USER",
                         help="Create an administrator (password prompted, or PYFRC2G_ADMIN_PASSWORD), "
                              "or reset their password, then exit")
+    parser.add_argument("--restore-backup", metavar="FILE",
+                        help="Restore an encrypted backup (Administration > Backup & keys) into the data "
+                             "directory (passphrase prompted, or PYFRC2G_BACKUP_PASSPHRASE), then exit")
+    parser.add_argument("--force", action="store_true", help="With --restore-backup: replace the existing database")
     parser.add_argument("--env-file", metavar="FILE", help="Load variables from this file (default: ./.env)")
     parser.add_argument("--debug", action="store_true", help="Debug logging")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
+
+
+def restore_backup(args):
+    import getpass
+
+    from pyfrc2g_web import DB_FILE, backup
+
+    passphrase = os.environ.get("PYFRC2G_BACKUP_PASSPHRASE") or getpass.getpass("Backup passphrase: ")
+    os.makedirs(args.data_dir, mode=0o700, exist_ok=True)
+    try:
+        backup.restore(args.restore_backup, passphrase, os.path.join(args.data_dir, DB_FILE), force=args.force)
+    except (backup.BackupError, OSError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    print(f"Backup restored in {args.data_dir}. Start the application with the same PYFRC2G_SECRET_KEY "
+          "as the one of the backed-up instance.")
+    return 0
 
 
 def main(argv=None):
@@ -63,9 +85,11 @@ def main(argv=None):
                         datefmt="%Y-%m-%d %H:%M:%S")
 
     def stop(signum, frame):
-        raise KeyboardInterrupt  # docker stop: SIGTERM, ignored by a PID 1 without handler.
+        raise KeyboardInterrupt  # docker stop sends SIGTERM, which a PID 1 process ignores without a handler.
 
     signal.signal(signal.SIGTERM, stop)
+    if args.restore_backup:
+        return restore_backup(args)
     if args.create_admin:
         return create_admin(args.data_dir, args.create_admin)
     return serve(args)

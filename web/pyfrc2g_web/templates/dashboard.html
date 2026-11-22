@@ -8,8 +8,8 @@
   <div class="actions">
     {% if gateways %}<a class="btn secondary" href="{{ url_for('main.export', fmt='xlsx', site=site or None, tag=tag or None) }}">Export Excel</a>
     <a class="btn secondary" href="{{ url_for('main.export', fmt='pdf', site=site or None, tag=tag or None) }}">Export PDF</a>{% endif %}
-  {% if g.user.role == 'admin' %}
-    <a class="btn secondary" href="{{ url_for('main.uploads') }}">Analyse a file</a>
+  {% if can('analyse') %}
+    {% if not is_restricted() %}<a class="btn secondary" href="{{ url_for('main.uploads') }}">Analyse a file</a>{% endif %}
     <form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}<button class="btn" {{ 'disabled' if not kpis.api }}>Analyse API firewalls ({{ kpis.api }})</button></form>
   {% endif %}</div>
 </div>
@@ -53,7 +53,7 @@
 <div class="card empty">
   <h2>No firewall analysed yet</h2>
   <p>Upload a configuration file (pfSense / OPNsense config.xml, FortiGate, iptables, nftables, nfSensei, Stormshield)
-  {% if g.user.role == 'admin' %}or <a href="{{ url_for('admin.firewall') }}">add an API firewall</a>{% endif %}.</p>
+  {% if can('manage') %}or <a href="{{ url_for('admin.firewall') }}">add an API firewall</a>{% endif %}.</p>
   <a class="btn" href="{{ url_for('main.uploads') }}">Analyse a configuration file</a>
 </div>
 {% endif %}

@@ -3,7 +3,7 @@
 {% block title %}Configuration files{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>Configuration files</h1><div class="sub">Files are stored encrypted; analyses run in a private temporary directory deleted afterwards.</div></div></div>
-{% if g.user.role == 'admin' %}
+{% if can('analyse') and not is_restricted() %}
 <form class="card" method="post" enctype="multipart/form-data">{{ csrf() }}
   <h2>Analyse a configuration file</h2>
   <div class="grid cols-2">
@@ -30,6 +30,6 @@
 <div class="section"><h2>Stored files</h2>
 {% if uploads %}<div class="table-wrap"><table><thead><tr><th>#</th><th>File</th><th>Format</th><th class="num">Size</th><th>By</th><th>Date</th><th></th></tr></thead><tbody>
 {% for u in uploads %}<tr><td>{{ u.id }}</td><td>{{ u.filename }}</td><td>{{ u.format }}</td><td class="num">{{ (u.size / 1024)|round(1) }} KB</td><td class="muted">{{ u.username or "—" }}</td><td class="muted nowrap">{{ u.created }}</td>
-<td>{% if g.user.role == 'admin' %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=u.id) }}">{{ csrf() }}<button class="btn small secondary">Analyse again</button></form>{% endif %}</td></tr>{% endfor %}
+<td>{% if can('analyse') %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=u.id) }}">{{ csrf() }}<button class="btn small secondary">Analyse again</button></form>{% endif %}</td></tr>{% endfor %}
 </tbody></table></div>{% else %}<div class="card empty">No file uploaded yet.</div>{% endif %}</div>
 {% endblock %}

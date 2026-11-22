@@ -38,7 +38,8 @@ def risk_line(history, height=180):
     area = f"{coords[0][0]:.1f},{top + plot_h} {line} {coords[-1][0]:.1f},{top + plot_h}"
     parts.append(f"<polygon class='area' points='{area}'/><polyline class='line' points='{line}'/>")
     for (date, score), (x, y) in zip(points, coords):
-        parts.append(f"<circle class='dot' cx='{x:.1f}' cy='{y:.1f}' r='3.5'><title>{_e(date)}: {score}</title></circle>")
+        parts.append(f"<circle class='dot' cx='{x:.1f}' cy='{y:.1f}' r='3.5'>"
+                     f"<title>{_e(date)}: {score}</title></circle>")
     labels = [0, len(points) - 1] if len(points) > 1 else [0]
     for i in labels:
         anchor = "start" if i == 0 and len(points) > 1 else "end"
@@ -49,6 +50,7 @@ def risk_line(history, height=180):
 
 
 def sparkline(history, width=120, height=32):
+    """Tiny score trend of the last 20 runs; empty markup with fewer than two points."""
     scores = [h.get("score") or 0 for h in history if h.get("score") is not None][-20:]
     if len(scores) < 2:
         return Markup("")
@@ -97,4 +99,39 @@ def donut(segments, label=""):
         offset += length
     parts.append(f"<text class='donut-total' x='60' y='58' text-anchor='middle'>{total}</text>"
                  f"<text class='donut-label' x='60' y='76' text-anchor='middle'>{_e(label)}</text></svg>")
+    return Markup("".join(parts))
+
+
+def value_line(points, key, label, height=130, fixed_max=None):
+    """Line + area of one figure over the analyses: points = [{"created", key: value}] (oldest first)."""
+    series = [(p.get("created") or "", p.get(key)) for p in points if p.get(key) is not None]
+    if not series:
+        return Markup("<p class='muted'>No data yet.</p>")
+    width, left, right, top, bottom = 320, 34, 10, 10, 22
+    plot_w, plot_h = width - left - right, height - top - bottom
+    maximum = fixed_max or max(max(v for _, v in series), 1)
+    step = plot_w / max(1, len(series) - 1)
+
+    def xy(i, v):
+        return (left + (i * step if len(series) > 1 else plot_w / 2),
+                top + plot_h * (1 - min(v, maximum) / maximum))
+
+    parts = [f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' "
+             f"aria-label='{_e(label)} over the last {len(series)} analyses'>"]
+    for fraction in (0, 0.5, 1):
+        y = top + plot_h * (1 - fraction)
+        parts.append(f"<line class='grid' x1='{left}' x2='{width - right}' y1='{y:.1f}' y2='{y:.1f}'/>"
+                     f"<text class='axis' x='{left - 6}' y='{y + 4:.1f}' text-anchor='end'>"
+                     f"{round(maximum * fraction)}</text>")
+    coords = [xy(i, v) for i, (_, v) in enumerate(series)]
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    parts.append(f"<polygon class='area' points='{coords[0][0]:.1f},{top + plot_h} {line} "
+                 f"{coords[-1][0]:.1f},{top + plot_h}'/><polyline class='line' points='{line}'/>")
+    for (date, value), (x, y) in zip(series, coords):
+        parts.append(f"<circle class='dot' cx='{x:.1f}' cy='{y:.1f}' r='3'><title>{_e(date)}: {value}</title></circle>")
+    for i in ([0, len(series) - 1] if len(series) > 1 else [0]):
+        anchor = "start" if i == 0 and len(series) > 1 else "end"
+        parts.append(f"<text class='axis' x='{coords[i][0]:.1f}' y='{height - 5}' text-anchor='{anchor}'>"
+                     f"{_e(series[i][0][:10])}</text>")
+    parts.append("</svg>")
     return Markup("".join(parts))

@@ -95,7 +95,7 @@ def _extract_port(dest_elem):
 
 
 def _register_interfaces(root, maps, require_enabled=False):
-    """Fill interface_map from <interfaces>: wan, lan and optN → description."""
+    """Fill interface_map and interface_nets from <interfaces> (wan, lan, optN) and <virtualip>."""
     for iface in root.findall("interfaces/*"):
         iface_id = (iface.tag or "").lower()
         if iface_id in _SYSTEM_INTERFACES:
@@ -122,13 +122,8 @@ def _register_interfaces(root, maps, require_enabled=False):
 
 def parse_pfsense_backup(root):
     """
-    Parse pfSense config.xml backup.
-
-    Args:
-        root: Parsed XML root element (or a path, for backward compatibility).
-
-    Returns:
-        tuple: (aliases_dict, rules_list) in API-compatible format.
+    Parse a pfSense config.xml backup (root element, or a path) into (maps, rules) in API-compatible format.
+    Floating rules (<floatingrules>) are appended with floating=True and no interface.
     """
     if not isinstance(root, ET.Element):
         root = parse(root).getroot()
@@ -188,12 +183,7 @@ def parse_opnsense_backup(root):
     Parse OPNSense config.xml backup.
     Supports both the legacy <filter><rule> layout and the 26.1+ MVC layout
     (<OPNsense><Firewall><Filter><rules><rule>).
-
-    Args:
-        root: Parsed XML root element (or a path, for backward compatibility).
-
-    Returns:
-        tuple: (aliases_dict, rules_list) in API-compatible format.
+    Accept a root element or a path; return (maps, rules) in API-compatible format.
     """
     if not isinstance(root, ET.Element):
         root = parse(root).getroot()
@@ -386,18 +376,11 @@ def outbound_nat_mode(root):
 
 def parse_xml_backup(xml_path):
     """
-    Parse XML backup file (pfSense or OPNSense). The file is read only once.
+    Parse an XML backup file (pfSense or OPNSense), reading it only once.
 
-    Args:
-        xml_path: Path to config.xml backup file.
-
-    Returns:
-        tuple: (aliases_dict, rules_list, gateway_type, gateway_name, nat_rules).
-        aliases_dict: interface_map, net_map, address_map, port_map, alias_details
-                      (None on error).
-        rules_list: Rule dicts in API-compatible format.
-        gateway_name: Hostname from XML, or None if not found.
-        nat_rules: Port forward rule dicts.
+    Return (maps, rules, gateway_type, gateway_name, nat_rules): maps holds the lookup maps plus
+    "nat_outbound_mode" (None on error), gateway_name is the XML hostname or None, and nat_rules
+    covers port forwards, outbound and 1:1 NAT.
     """
     if not Path(xml_path).is_file():
         logging.error(f"XML backup file not found: {xml_path}")

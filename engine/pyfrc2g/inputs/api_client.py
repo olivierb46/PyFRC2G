@@ -75,9 +75,7 @@ class APIClient:
         """
         Fetch NAT rules: port forwards, outbound (source NAT) and 1:1 mappings.
         OPNSense endpoints only exist on recent versions (best effort, skipped silently).
-
-        Returns:
-            list: NAT entries (with a "_nat_type" key), [] if unavailable.
+        Return the entries, each with a "_nat_type" key, or [] if unavailable.
         """
         all_entries = []
         for nat_type, pfs_path, opns_path in self._NAT_ENDPOINTS:
@@ -187,15 +185,7 @@ class APIClient:
             return []
 
     def _handle_api_error(self, operation, url, error, log_level=logging.WARNING):
-        """
-        Centralized error handling for API requests.
-
-        Args:
-            operation: Description of the operation (e.g. "fetch aliases").
-            url: The URL that was requested.
-            error: The exception that occurred.
-            log_level: Logging level to use (default: WARNING).
-        """
+        """Log an API request failure with a hint matching the error type or HTTP status."""
         error_type = type(error).__name__
 
         if isinstance(error, Timeout):
@@ -227,19 +217,8 @@ class APIClient:
     def _make_api_request(self, url, method="GET", headers=None, auth=None, params=None, timeout=10,
                           operation="API request", log_level=logging.ERROR, json_body=None):
         """
-        Make an API request with proper error handling.
-
-        Args:
-            url: The URL to request.
-            method: HTTP method (default: GET).
-            headers: Request headers.
-            auth: Authentication tuple (for OPNSense).
-            params: Query parameters.
-            timeout: Request timeout in seconds.
-            operation: Description of the operation for error messages.
-
-        Returns:
-            Response object if successful, None otherwise.
+        Send an HTTP request on the shared session and return the response, or None on any failure
+        (the error is logged at log_level). The configured api_timeout overrides timeout (seconds).
         """
         kwargs = {"timeout": getattr(self.config, "api_timeout", None) or timeout}
         if headers:
@@ -259,7 +238,7 @@ class APIClient:
             return None
 
     def fetch_aliases(self):
-        """Fetch all aliases from the configured gateway and update global maps."""
+        """Fetch aliases and interfaces from the gateway into the global maps, applying configured interface names."""
         gateway_type = self.config.gateway_type.lower()
         if gateway_type == "pfsense":
             result = self._fetch_pfsense_aliases()
@@ -308,18 +287,15 @@ class APIClient:
                         continue
                     name = alias.get("name", "").lower()
                     alias_type = alias.get("type", "")
-                    # Address is an array in pfSense API v2.
+                    # The address is an array in pfSense API v2; older versions return a string.
                     address_raw = alias.get("address", [])
-                    # Convert to list if it's a string (backward compatibility).
                     if isinstance(address_raw, str):
                         address_list = [address_raw] if address_raw else []
                     else:
                         address_list = address_raw if isinstance(address_raw, list) else []
-                    # Join addresses with comma and space.
                     address_str = ", ".join(str(addr) for addr in address_list if addr)
                     description = alias.get("descr", "") or alias.get("name", "")
 
-                    # Store alias details
                     self.alias_details[name] = {
                         "name": alias.get("name", ""),
                         "type": alias_type,
@@ -464,7 +440,9 @@ class APIClient:
                     # Map to appropriate dictionaries.
                     if alias_type in ["host", "network"]:
                         self.net_map[name] = self.address_map[name] = description
-                        logging.debug(f"Mapped {alias_type} alias '{alias_name}': {description} (content: {content_str})")
+                        logging.debug(
+                            f"Mapped {alias_type} alias '{alias_name}': {description} (content: {content_str})"
+                        )
                     elif alias_type == "port":
                         self.port_map[name] = content_str or description
                         logging.debug(f"Mapped port alias '{alias_name}': {content_str or description}")
@@ -516,7 +494,9 @@ class APIClient:
                                 logging.debug(f"Mapped interface: {identifier} -> {description}")
                             else:
                                 self.interface_map[identifier] = identifier.upper()
-                                logging.debug(f"Mapped interface (no description): {identifier} -> {identifier.upper()}")
+                                logging.debug(
+                                    f"Mapped interface (no description): {identifier} -> {identifier.upper()}"
+                                )
 
                 logging.info(f"✓ Retrieved {len(self.interface_map)} interfaces from OPNSense API")
             except (ValueError, KeyError, TypeError) as e:
@@ -573,7 +553,10 @@ class APIClient:
                 logging.info(f"✓ {len(interfaces_to_process)} interfaces detected: {interfaces_to_process}")
             else:
                 logging.warning("Could not auto-detect interfaces. Will fetch all rules globally.")
-                logging.warning("To improve accuracy, please specify interfaces in config: INTERFACES = ['wan', 'lan', 'opt1', ...]")
+                logging.warning(
+                    "To improve accuracy, please specify interfaces in config: "
+                    "INTERFACES = ['wan', 'lan', 'opt1', ...]"
+                )
                 interfaces_to_process = []
         else:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")
@@ -598,7 +581,11 @@ class APIClient:
                 for entry in all_rules:
                     if not isinstance(entry, dict):
                         continue
-                    rule_id = entry.get("tracker") or entry.get("id") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
+                    rule_id = (
+                        entry.get("tracker")
+                        or entry.get("id")
+                        or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
+                    )
                     if rule_id and rule_id not in seen_rule_ids:
                         seen_rule_ids.add(rule_id)
                         all_entries.append(entry)
@@ -633,7 +620,11 @@ class APIClient:
                         for entry in entries:
                             if not isinstance(entry, dict):
                                 continue
-                            rule_id = entry.get("tracker") or entry.get("id") or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
+                            rule_id = (
+                                entry.get("tracker")
+                                or entry.get("id")
+                                or f"{entry.get('sequence', '')}{entry.get('interface', '')}"
+                            )
                             if rule_id and rule_id not in seen_rule_ids:
                                 seen_rule_ids.add(rule_id)
                                 all_entries.append(entry)
@@ -661,7 +652,10 @@ class APIClient:
                 logging.info(f"✓ {len(interfaces_to_process)} interfaces detected: {interfaces_to_process}")
             else:
                 logging.warning("Could not auto-detect interfaces. Will fetch all rules globally.")
-                logging.warning("To improve accuracy, please specify interfaces in config: INTERFACES = ['wan', 'lan', 'opt1', ...]")
+                logging.warning(
+                    "To improve accuracy, please specify interfaces in config: "
+                    "INTERFACES = ['wan', 'lan', 'opt1', ...]"
+                )
                 interfaces_to_process = []
         else:
             logging.info(f"Using {len(interfaces_to_process)} manually specified interfaces: {interfaces_to_process}")

@@ -6,8 +6,10 @@ small helpers shared by the audit, diff, hits and report modules.
 Row keys:
     CSV columns (config.CSV_FIELDNAMES): SOURCE, GATEWAY, ACTION, PROTOCOL, PORT, DESTINATION,
         COMMENT, DISABLED, FLOATING, RULE ORDER, RULE ID, IP VERSION
+    Extra keys: AUTOMATIC, DIRECTION
     Private keys (never written): _SRC/_DST/_PORT/_PROTO raw values, _IPVER, _IFACES,
-        _IN_IFACE/_OUT_IFACE (iptables, nftables, FortiGate), _ESTABLISHED, _HITS, _SEQ
+        _IN_IFACE/_OUT_IFACE (iptables, nftables, FortiGate), _ESTABLISHED, _HITS, _SEQ,
+        _QUICK, _DIRECTION, _RULE (compiled-rule cache)
 """
 
 import re

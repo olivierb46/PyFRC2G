@@ -34,9 +34,8 @@ def parse_pfctl(text):
     """
     Parse "pfctl -vvsr" output.
 
-    Returns:
-        dict: {key: {"packets", "bytes", "states", "evaluations"}} where key is the
-              ridentifier (pfSense tracker) and/or the label (OPNsense uuid).
+    Return {key: {"packets", "bytes", "states", "evaluations"}}, where key is the
+    ridentifier (pfSense tracker) and/or the label (OPNsense uuid).
     """
     counters = {}
     keys = []
@@ -66,7 +65,7 @@ def parse_pfctl(text):
 
 
 def load_counters_file(path):
-    """Read a pfctl -vvsr output file. Returns {} on error."""
+    """Read a pfctl -vvsr output file; return {} if it cannot be read."""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             counters = parse_pfctl(f.read())
@@ -78,7 +77,7 @@ def load_counters_file(path):
 
 
 def normalize_opnsense_stats(data):
-    """{"stats": {label: {...}}} from rule_stats -> {key: counters}."""
+    """Convert the rule_stats response ({"stats": {label: {...}}}) to {key: counters}."""
     stats = data.get("stats", data) if isinstance(data, dict) else {}
     out = {}
     for key, value in (stats or {}).items():
@@ -129,7 +128,7 @@ def _to_int(value):
 
 
 def attach_counters(rows, counters):
-    """Set row["_HITS"] from counters (keyed by RULE ID). Returns the number of rules matched."""
+    """Set row["_HITS"] from counters (keyed by RULE ID); return the number of rules matched."""
     matched = 0
     for row in rows:
         key = (row.get("RULE ID") or "").strip()
@@ -150,8 +149,7 @@ def update_history(path, rows, now=None, unused_days=30):
     """
     Update hits_history.json with the counters attached to rows and classify each rule.
 
-    Returns:
-        tuple: (hits_rows for the HITS report, audit findings).
+    Return (rows for the rule usage report, audit findings).
     """
     from pyfrc2g.analysis.audit import make_finding
 

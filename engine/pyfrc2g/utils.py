@@ -1,10 +1,11 @@
 """
-Utility functions for PyFRC2G.
+Shared helpers: process-wide alias / interface lookup maps, value mapping for rule fields,
+URL and filename helpers, and parallel loading of several firewalls.
 """
 
 import re
 
-# Global API alias maps (populated by APIClient).
+# Process-wide lookup maps, installed by update_api_maps() (filled by the API client / parsers).
 API_INTERFACE_MAP = {}
 API_NET_MAP = {}
 API_ADDRESS_MAP = {}
@@ -45,15 +46,12 @@ def normalize_interface(entry_interface):
     return str(entry_interface).strip()
 
 
-# Floating: API/backup use same semantics (tag "yes"/"1"/"true" or flag True/1).
+# Values meaning "floating" in API and backup data (tag "yes"/"1"/"true" or flag True/1).
 FLOATING_FLAG_VALUES = frozenset({True, "1", "yes", "true"})  # 1 == True
 
 
 def is_interface_floating(raw_interface):
-    """
-    True if interface value means floating: empty, "floating", "0", or multiple (e.g. "lan,wan").
-    Used by API client and XML parser for consistent tagging.
-    """
+    """True if the interface value means floating: empty, "floating", "0" or several (e.g. "lan,wan")."""
     if raw_interface is None:
         return True
     if isinstance(raw_interface, (int, float)) and raw_interface == 0:
@@ -77,10 +75,10 @@ def extract_host_from_url(url):
     try:
         parsed = urlparse(url)
         host = parsed.netloc or parsed.path.split('/')[0]
-        # Remove port if present.
+        # Drop the port.
         if ':' in host:
             host = host.split(':')[0]
-        # Remove placeholder values.
+        # Placeholder values from the example configuration.
         if host in ["<OPNS_ADDRESS>", "<PFS_ADDRESS>", "<GW_NAME>", ""]:
             return "unknown"
         return host or "unknown"
@@ -113,9 +111,7 @@ def get_port_val(entry):
 
 
 def map_value(value, field=None, any_value="Any"):
-    """
-    Map value using API aliases (alias takes precedence over raw value).
-    """
+    """Map a rule field value through the alias / interface maps; unknown values are returned unchanged."""
     if value is None:
         return any_value
     if isinstance(value, list):
@@ -129,7 +125,7 @@ def map_value(value, field=None, any_value="Any"):
     if field in ("source", "interface"):
         val = str(value).strip().lower()
         if "," in val:
-            # Multiple interfaces (e.g. "lan,wan") → map each and rejoin
+            # Several interfaces (e.g. "lan,wan"): map each one.
             parts = [p.strip() for p in val.split(",") if p.strip()]
             mapped = [API_INTERFACE_MAP.get(p, p.upper()) for p in parts]
             return ", ".join(mapped)
@@ -152,18 +148,14 @@ def map_value(value, field=None, any_value="Any"):
             interface_name = val.rsplit(':', 1)[0]
         elif val.endswith('ip') and len(val) > 2:
             # Pattern "lanip", "opt1ip" -> remove "ip" suffix and match interface.
-            potential_interface = val[:-2]  # Remove "ip" suffix
-            # Check if it is a known interface (wan, lan, optX).
+            potential_interface = val[:-2]
             if potential_interface in API_INTERFACE_MAP:
                 interface_name = potential_interface
-            # Also try opt1, opt2, etc.
             elif potential_interface.startswith('opt') and potential_interface[3:].isdigit():
-                # For opt1ip, opt2ip, etc.
-                interface_name = potential_interface
+                    interface_name = potential_interface
 
         if interface_name and interface_name in API_INTERFACE_MAP:
             interface_desc = API_INTERFACE_MAP[interface_name]
-            # Return "{Interface Description} Address".
             return f"{interface_desc} Address"
 
         # Check interface map (interfaces can be destinations but not gateway addresses).
@@ -250,14 +242,13 @@ def get_alias_details(value):
     if not value:
         return None
     val = str(value).lower().strip().lstrip("!")
-    # Direct lookup.
     if val in API_ALIAS_DETAILS:
         return API_ALIAS_DETAILS[val]
-    # Try without spaces and special characters.
+    # Retry without spaces and commas.
     val_clean = val.replace(' ', '').replace(',', '')
     if val_clean in API_ALIAS_DETAILS:
         return API_ALIAS_DETAILS[val_clean]
-    # Try each part if comma-separated list.
+    # Comma-separated list: first part that is an alias.
     if ',' in val:
         for part in val.split(','):
             part_clean = part.strip().lower()
@@ -274,18 +265,15 @@ def format_alias_label(value, default_label=None):
     alias_info = get_alias_details(value)
     if alias_info:
         parts = []
-        # Add alias name (keep the "!" negation marker if present).
+        # Keep the "!" negation marker.
         negation = "!" if str(value).strip().startswith("!") else ""
         parts.append(negation + alias_info.get("name", value))
-        # Add type.
         alias_type = alias_info.get("type", "")
         if alias_type:
             parts.append(f"[{alias_type}]")
-        # Add content if available.
         content = alias_info.get("content", "")
         if content:
             parts.append(f"({content})")
-        # Add description if different from name.
         description = alias_info.get("description", "")
         if description and description != alias_info.get("name", ""):
             parts.append(f"- {description}")

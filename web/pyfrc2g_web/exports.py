@@ -161,6 +161,19 @@ def _pdf(items, scope):
     return out.getvalue(), "application/pdf"
 
 
+def collect(db, gateways):
+    """Return the export items for these gateways: latest analysis with the accepted risks applied."""
+    from pyfrc2g_web import exceptions as accepted
+
+    exceptions = db.exceptions()
+    items = []
+    for gw in gateways:
+        analyses = db.analyses(gw["id"])
+        data = accepted.apply(db.analysis(analyses[0]["id"])["data"], exceptions, gw["name"]) if analyses else None
+        items.append({"gateway": gw, "data": data})
+    return items
+
+
 def build(fmt, items, scope):
-    """(content bytes, mime type) of the export; fmt: 'xlsx' or 'pdf'."""
+    """Return (content bytes, MIME type) of the export; fmt is 'xlsx' or 'pdf'."""
     return (_xlsx if fmt == "xlsx" else _pdf)(items, scope)

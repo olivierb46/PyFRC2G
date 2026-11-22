@@ -311,7 +311,9 @@ def write_csv_files(report, out, host, rule_fields):
 
 def _short_name(name):
     name = safe_filename(name)
-    return f"{name[:60]}_{hashlib.md5(name.encode(), usedforsecurity=False).hexdigest()[:8]}" if len(name) > 80 else name
+    if len(name) <= 80:
+        return name
+    return f"{name[:60]}_{hashlib.md5(name.encode(), usedforsecurity=False).hexdigest()[:8]}"
 
 
 def _zone_part(generator, rows, work_dir, title):

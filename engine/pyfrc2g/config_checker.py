@@ -16,12 +16,7 @@ def _is_placeholder(value):
 
 
 def check_target(target):
-    """
-    Check one firewall target dict.
-
-    Returns:
-        list: Error messages (empty if the target is usable).
-    """
+    """Check one firewall target dict. Returns a list of error messages (empty if usable)."""
     import os
 
     from pyfrc2g.config import unresolved_env_refs

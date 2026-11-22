@@ -9,8 +9,7 @@ import os
 import sys
 import traceback
 
-# Heavy imports (requests, graphviz, reportlab, pypdf, openpyxl) are done lazily in run().
-# Import name -> pip package name.
+# Import name -> pip package name. Heavy modules are imported lazily, after check_dependencies().
 REQUIRED_PACKAGES = {"requests": "requests", "graphviz": "graphviz", "reportlab": "reportlab",
                      "pypdf": "pypdf", "openpyxl": "openpyxl", "yaml": "pyyaml", "defusedxml": "defusedxml"}
 
@@ -36,12 +35,7 @@ Examples:
 
 
 def check_dependencies():
-    """
-    Verify that required dependencies are installed.
-
-    Returns:
-        tuple: (ok, error_message); error_message contains an "Install with: ..." line.
-    """
+    """Check that the required packages can be imported. Returns (ok, error message or None)."""
     import importlib
 
     missing = []
@@ -317,15 +311,7 @@ def _stop_on_sigterm():
 
 
 def main(argv=None):
-    """
-    Entry point for the pyfrc2g console script.
-
-    Args:
-        argv: Optional list of arguments (default: sys.argv[1:]).
-
-    Returns:
-        int: Exit code (0 on success).
-    """
+    """Entry point of the pyfrc2g console script (argv defaults to sys.argv[1:]). Returns the exit code."""
     _preload_env_file(sys.argv[1:] if argv is None else argv)
     args = parse_args(argv)
     if args.check_deps:

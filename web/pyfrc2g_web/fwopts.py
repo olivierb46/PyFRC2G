@@ -33,10 +33,10 @@ _TAG = re.compile(r"^[\w .:-]{1,32}$", re.UNICODE)
 
 
 def options(firewall):
-    """Every option of a firewall record, defaults filled in."""
+    """Return every option of a firewall record, with defaults filled in."""
     conf = firewall.get("config") or {}
     values = {key: conf.get(key, value) for key, value in DEFAULTS.items()}
-    if values["hits"] is None:  # Before this option: pfSense "hits_api", OPNsense always on.
+    if values["hits"] is None:  # Legacy configs without this option: pfSense used "hits_api", OPNsense was always on.
         values["hits"] = bool(conf.get("hits_api")) if firewall.get("type") == "pfsense" else True
     for key, allowed in CHOICES.items():
         if values[key] not in allowed:
@@ -49,6 +49,7 @@ def split_list(text):
 
 
 def ports(text, label, errors):
+    """Parse a list of TCP/UDP ports, appending a message to `errors` when invalid."""
     try:
         ports = sorted({int(p) for p in re.split(r"[,\s]+", text or "") if p})
     except ValueError:
@@ -75,7 +76,7 @@ def _number(text, label, errors, low, high):
 
 
 def _labels(text, errors):
-    """'opt1=DMZ, opt2 = Guests' -> {'opt1': 'DMZ', 'opt2': 'Guests'}."""
+    """Parse 'opt1=DMZ, opt2 = Guests' into {'opt1': 'DMZ', 'opt2': 'Guests'}."""
     labels = {}
     for item in split_list(text):
         key, sep, value = item.partition("=")
@@ -88,10 +89,10 @@ def _labels(text, errors):
 
 
 def parse_form(form, old, errors, backup=False):
-    """Options from the firewall form (old: options of the stored firewall).
+    """Build the options from the firewall form, appending validation messages to `errors`.
 
-    backup: gateway analysed from a configuration file (no API: no interfaces, timeout, hit counters
-    or schedule).
+    old: options of the stored firewall. backup: the gateway is analysed from a configuration file,
+    so there is no API (no interfaces, timeout, hit counters or schedule).
     """
     from pyfrc2g.config import parse_duration
 
@@ -182,7 +183,7 @@ def parse_form(form, old, errors, backup=False):
 # ---------------------------------------------------------------------------
 
 def target(firewall, opts):
-    """Engine target dict (credentials, TLS and per-firewall overrides)."""
+    """Return the engine target dict (credentials, TLS and per-firewall overrides)."""
     conf = firewall["config"]
     result = {"name": firewall["name"], "type": firewall["type"], "url": conf.get("url"),
               "token": conf.get("token"), "key": conf.get("key"), "secret": conf.get("secret"),
@@ -197,20 +198,20 @@ def target(firewall, opts):
 
 
 def backup_target(opts):
-    """Engine target of a gateway analysed from a configuration file (overrides only)."""
+    """Return the engine target of a gateway analysed from a configuration file (overrides only)."""
     return {"wan_interfaces": opts["wan_interfaces"], "admin_ports": opts["admin_ports"],
             "sensitive_ports": opts["sensitive_ports"], "unused_days": opts["unused_days"],
             "meta": meta(opts)}
 
 
 def meta(opts):
-    """Organisation fields shown in the reports."""
+    """Return the organisation fields (description, site, owner, tags) shown in the reports."""
     return {"Description": opts["description"], "Site": opts["site"], "Owner": opts["owner"],
             "Tags": ", ".join(opts["tags"])}
 
 
 def arguments(opts, firewall_type, settings):
-    """Command line options of the engine for this firewall."""
+    """Return the engine command line arguments for this firewall."""
     args = ["--view", opts["view"]]
     if opts["ip_version"]:
         args += ["--ip-version", opts["ip_version"]]
@@ -230,8 +231,9 @@ def arguments(opts, firewall_type, settings):
 
 def policy_texts(opts, settings):
     """
-    Compliance policies (YAML texts) applied to this firewall: the global one (or its own),
-    then those of its site and of each of its tags (Administration > Policies). "No policy" = none.
+    Return the compliance policies (YAML texts) applied to this firewall: the global one (or its
+    own), then those of its site and of each of its tags (Administration > Policies).
+    The "none" policy mode disables all of them.
     """
     if opts["policy_mode"] == "none":
         return []
@@ -245,7 +247,7 @@ def policy_texts(opts, settings):
 
 
 def schedule_interval(opts, settings):
-    """Seconds between two scheduled analyses, None when not scheduled."""
+    """Return the seconds between two scheduled analyses, or None when not scheduled."""
     from pyfrc2g.config import parse_duration
 
     if opts["schedule_mode"] == "manual":

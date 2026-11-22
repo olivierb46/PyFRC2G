@@ -44,7 +44,7 @@ def _key_from(value, salt):
 
 
 class Cipher:
-    """Encrypts / decrypts bytes, text and JSON values stored in the database."""
+    """Encrypt and decrypt the bytes, text and JSON values stored in the database."""
 
     def __init__(self, keys):
         from cryptography.fernet import Fernet, MultiFernet
@@ -116,7 +116,7 @@ class Cipher:
         return self.encrypt(_CHECK_VALUE)
 
     def verify(self, token):
-        """Raise CryptoKeyError if token (from check_token) was not made with one of our keys."""
+        """Raise CryptoKeyError if token (from check_token) was not made with one of the configured keys."""
         if self.decrypt(token) != _CHECK_VALUE:
             raise CryptoKeyError("cannot decrypt the database: wrong PYFRC2G_SECRET_KEY")
 

@@ -55,7 +55,7 @@ class PolicyError(ValueError):
 
 
 def load_policy(path):
-    """Load and validate a policy file. Raises PolicyError on invalid content."""
+    """Load and validate a policy file (YAML for .yml/.yaml, else JSON); raise PolicyError if invalid."""
     with open(path, encoding="utf-8") as f:
         text = f.read()
     policies = parse_policy(text, yaml_format=path.lower().endswith((".yml", ".yaml")))
@@ -64,7 +64,7 @@ def load_policy(path):
 
 
 def parse_policy(text, yaml_format=True):
-    """Parse and validate a policy given as YAML (or JSON) text. Raises PolicyError."""
+    """Parse and validate policy text (YAML or JSON); raise PolicyError if invalid."""
     if yaml_format:
         try:
             import yaml
@@ -128,7 +128,7 @@ def _interface_matches(rule, wanted):
 
 
 def _single(rule, key, value):
-    """Evaluate one condition value (without negation)."""
+    """Evaluate one condition value (the "!" prefix is already removed)."""
     if key == "interface":
         return _interface_matches(rule, value)
     if key == "action":

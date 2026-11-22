@@ -14,7 +14,7 @@ import re
 # Single firewall (legacy layout, used when FIREWALLS is empty).
 # ---------------------------------------------------------------------------
 
-# Gateway type: "pfsense" or "opnsense".
+# Gateway type: "pfsense", "opnsense" or "nfsensei".
 GATEWAY_TYPE = "pfsense"
 
 # pfSense configuration.
@@ -291,12 +291,8 @@ class Config:
     def __init__(self, gateway_name_override=None, gateway_type_override=None, target=None,
                  output_base=None, interfaces_override=None):
         """
-        Args:
-            gateway_name_override: Override gateway name (e.g. from --gateway-name or backup).
-            gateway_type_override: Override gateway type (e.g. from backup file detection).
-            target: Firewall target dict (see FIREWALLS); defaults to the legacy variables.
-            output_base: Base output directory (default: results).
-            interfaces_override: Interface list replacing the configured one.
+        Build the settings of one firewall from its target dict (see FIREWALLS; defaults to the
+        legacy single-firewall variables). The overrides take precedence over the target.
         """
         from pyfrc2g.utils import extract_host_from_url
 
@@ -353,6 +349,5 @@ class Config:
         self.unused_days = _positive_int(target.get("unused_days")) or UNUSED_DAYS
         self.risk_weights = dict(RISK_WEIGHTS)
 
-        # Constants.
         self.csv_fieldnames = CSV_FIELDNAMES
         self.any_value = ANY_VALUE

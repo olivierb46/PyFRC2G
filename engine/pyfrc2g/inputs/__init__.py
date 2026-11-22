@@ -1,6 +1,6 @@
 """
 Inputs: firewall API client (api_client) and configuration file parsers. Every format is
-converted to the same model as the pfSense / OPNsense XML parser (pfsense_xml):
+converted to the same structure as the pfSense / OPNsense XML parser (pfsense_xml):
 
     (maps, rule_entries, gateway_type, gateway_name, nat_entries)
 
@@ -10,8 +10,8 @@ rule_entries: dicts with action, interface, source, destination, protocol, desti
 
 Formats: pfsense / opnsense (config.xml), fortigate (full configuration backup),
 iptables (iptables-save / ip6tables-save output, -c for counters), nftables ("nft -j list
-ruleset" JSON), stormshield (filter slot file or extracted ConfigFiles directory, experimental), nfsensei
-(running configuration, JSON or YAML).
+ruleset" JSON), stormshield (filter slot file or extracted ConfigFiles directory,
+experimental), nfsensei (running configuration, JSON or YAML).
 """
 
 import logging

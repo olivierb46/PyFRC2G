@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Backup & keys{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Backup &amp; keys</h1>
+<div class="sub">Encrypted copy of the database, and re-encryption after a change of the encryption key.</div></div></div>
+<form class="card" method="post">{{ csrf() }}<input type="hidden" name="action" value="download">
+  <h2>Download an encrypted backup</h2>
+  <p class="help">A consistent snapshot of the database (users, firewalls, analyses, reports, settings), encrypted with the passphrase you choose now. <b>To restore it you need this passphrase and the application key <code>PYFRC2G_SECRET_KEY</code></b> (the content is encrypted with it too): <code>pyfrc2g-web --restore-backup FILE --data-dir DIR</code> with the application stopped. The passphrase is not stored.</p>
+  <div class="grid cols-2">
+    <div><label for="passphrase">Passphrase</label><input type="password" id="passphrase" name="passphrase" minlength="{{ min_length }}" required autocomplete="new-password"><div class="help">At least {{ min_length }} characters.</div></div>
+    <div><label for="confirm">Confirm</label><input type="password" id="confirm" name="confirm" required autocomplete="new-password"></div>
+  </div>
+  <div class="form-actions"><button class="btn">Download the backup</button></div>
+</form>
+<div class="card section">
+  <h2>Rotate the encryption key</h2>
+  <ol class="small">
+    <li>Generate a new key: <code>python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code> and <b>download a backup above first</b>.</li>
+    <li>Set it in <code>PYFRC2G_SECRET_KEY</code> and put the previous key in <code>PYFRC2G_SECRET_KEY_OLD</code>, then restart.</li>
+    <li>Click the button below: every stored value is re-encrypted with the new key.</li>
+    <li>Remove <code>PYFRC2G_SECRET_KEY_OLD</code> and restart.</li>
+  </ol>
+  <p>Encrypted values: <b>{{ status.total }}</b> · still under a previous key: <b>{{ status.old }}</b> ·
+    previous key configured: <b>{{ "yes" if old_key else "no" }}</b></p>
+  {% if status.old and not old_key %}<div class="flash error">Some values use a key that is not configured: they cannot be read. Put it in PYFRC2G_SECRET_KEY_OLD.</div>{% endif %}
+  <form method="post" data-confirm="Re-encrypt every stored value with the current key? This can take a while on a large database.">{{ csrf() }}<input type="hidden" name="action" value="rotate">
+    <button class="btn" {{ 'disabled' if not status.old }}>Re-encrypt {{ status.old }} value(s)</button></form>
+</div>
+{% endblock %}

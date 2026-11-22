@@ -1,6 +1,6 @@
 """
 Main pages: sign-in, dashboard, firewall details (rules, audit, changes, NAT, matrix, usage,
-graphs, reports, history), uploads, runs, account.
+graphs, reports, history), uploads, runs, trends, comparison, help, account.
 """
 
 import logging
@@ -18,8 +18,8 @@ from flask import (
     url_for,
 )
 
-from pyfrc2g_web import security
-from pyfrc2g_web.security import admin_required, login_required
+from pyfrc2g_web import access, security
+from pyfrc2g_web.security import admin_required, login_required, permission_required
 
 bp = Blueprint("main", __name__)
 
@@ -40,6 +40,7 @@ def db():
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
+    """Sign in with a local account (throttled per address and per user name)."""
     if g.user is not None:
         return redirect(url_for("main.dashboard"))
     error = None
@@ -61,7 +62,12 @@ def login():
             db().add_event(username or "?", "failed sign-in", address)
             logging.warning(f"web: failed sign-in for {username!r} from {address}")
             error = "Invalid user name or password."
-    return render_template("login.html", error=error, no_users=db().count_users() == 0)
+    sso_url = None
+    if "pyfrc2g_oidc" in current_app.extensions:
+        from pyfrc2g_web.oidc import sso_login_url
+
+        sso_url = sso_login_url(request.args.get("next"))
+    return render_template("login.html", error=error, no_users=db().count_users() == 0, sso_url=sso_url)
 
 
 @bp.route("/logout", methods=["POST"])
@@ -76,6 +82,7 @@ def logout():
 
 @bp.route("/health")
 def health():
+    """Liveness probe for load balancers and containers."""
     return Response("ok", mimetype="text/plain")
 
 
@@ -83,18 +90,19 @@ def health():
 # Dashboard
 # ---------------------------------------------------------------------------
 
+def _visible_runs(limit, gateway=None):
+    """Runs the user may see: all of them, or (scoped user) those of visible firewalls and their own."""
+    if not access.is_restricted():
+        return db().runs(limit=limit, gateway=gateway)
+    names, user_id = access.visible_names(db()), g.user["id"]
+    return db().runs(limit=limit, gateway=gateway,
+                     accept=lambda r: bool(set(r["gateways"]) & names) or r.get("user_id") == user_id)
+
+
 def _filtered_gateways():
     """Gateways (with site, tags, description) matching the site / tag filters of the query string."""
-    from pyfrc2g_web import fwopts
-
     firewalls = db().firewalls()
-    labels = {f["id"]: fwopts.options(f) for f in firewalls}
-    gateways = db().gateways()
-    for gw in gateways:
-        opts = labels.get(gw["firewall_id"]) or (
-            fwopts.options({"config": gw["options"]}) if gw.get("options") is not None else {})
-        gw.update(site=opts.get("site", ""), tags=opts.get("tags", []), description=opts.get("description", ""),
-                  owner=opts.get("owner", ""))
+    gateways = access.visible_gateways(db())  # Only the firewalls the user may see.
     sites = sorted({gw["site"] for gw in gateways if gw["site"]})
     tags = sorted({tag for gw in gateways for tag in gw["tags"]})
     site, tag = request.args.get("site", ""), request.args.get("tag", "")
@@ -111,7 +119,7 @@ def dashboard():
     firewalls, gateways, sites, tags, site, tag = _filtered_gateways()
     for gw in gateways:
         gw["history"] = db().score_history(gw["id"])
-    runs = db().runs(limit=8)
+    runs = _visible_runs(8)
     scheduler = current_app.scheduler
     next_run = scheduler.next_run() if scheduler else None
     kpis = {
@@ -132,13 +140,11 @@ def dashboard():
 # ---------------------------------------------------------------------------
 
 def _gateway_or_404(name):
-    gateway = next((gw for gw in db().gateways() if gw["name"] == name), None)
-    if gateway is None:
-        abort(404)
-    return gateway
+    return access.require_gateway(name)  # Also 404 for a firewall outside the user scope.
 
 
 def _selected_analysis(gateway):
+    """Return (all analyses, the one selected by ?analysis=, defaulting to the latest)."""
     analyses = db().analyses(gateway["id"])
     if not analyses:
         return analyses, None
@@ -148,6 +154,7 @@ def _selected_analysis(gateway):
 
 
 def _classify(artifacts, gateway_name):
+    """Group the stored files of an analysis by kind for the Reports & files tab."""
     groups = {"reports": [], "interfaces": [], "csv": [], "graphs": [], "other": []}
     for item in artifacts:
         name = item["name"]
@@ -169,6 +176,7 @@ def _classify(artifacts, gateway_name):
 @bp.route("/firewalls/<name>")
 @login_required
 def gateway(name):
+    """Firewall page: one tab per view of the selected analysis."""
     gw = _gateway_or_404(name)
     tab = request.args.get("tab", "overview")
     if tab not in dict(TABS):
@@ -193,12 +201,13 @@ def gateway(name):
                            ciso=ciso_info,
                            data=analysis["data"] if analysis else None, artifacts=artifacts,
                            history=db().score_history(gw["id"], 60),
-                           runs=db().runs(limit=20, gateway=gw["name"]))
+                           runs=_visible_runs(20, gw["name"]))
 
 
 @bp.route("/firewalls/<name>/files/<int:analysis_id>/<path:filename>")
 @login_required
 def artifact(name, analysis_id, filename):
+    """Serve a stored file of an analysis, inline or as a download, with a restrictive CSP for HTML and SVG."""
     gw = _gateway_or_404(name)
     if not any(a["id"] == analysis_id for a in db().analyses(gw["id"])):
         abort(404)
@@ -220,9 +229,13 @@ def artifact(name, analysis_id, filename):
 
 
 @bp.route("/firewalls/<name>/accept", methods=["POST"])
-@admin_required
+@permission_required("propose_risk")
 def accept_finding(name):
-    """Accept a finding of the Audit tab (justification, owner, optional expiry)."""
+    """
+    Accept a finding of the Audit tab (justification, owner, optional expiry). An administrator's
+    acceptance applies at once; an operator's is a proposal waiting for an administrator's decision
+    (and with PYFRC2G_RISK_FOUR_EYES=1 an administrator's too, to be approved by another one).
+    """
     import re
     from datetime import date
 
@@ -248,9 +261,18 @@ def accept_finding(name):
     else:
         scope = request.form.get("scope", "rule")
         everywhere = request.form.get("where") == "all"
+        if everywhere and access.is_restricted():
+            abort(403)  # A scoped user cannot decide for firewalls outside the scope.
         key = accepted.rule_key(finding) if scope == "rule" else ""
+        approve_now = security.can("approve_risk") and not current_app.config.get("RISK_FOUR_EYES")
         db().add_exception(None if everywhere else name, finding["CHECK"], key, reason, owner, expires,
-                           g.user["username"])
+                           g.user["username"], approver=g.user["username"] if approve_now else None)
+        if not approve_now:
+            db().add_event(g.user["username"], "risk proposed",
+                           f"{finding['CHECK']} on {'all firewalls' if everywhere else name}")
+            flash("Acceptance proposed: it counts once an administrator approves it "
+                  "(Administration > Accepted risks).", "ok")
+            return redirect(url_for("main.gateway", name=name, tab="audit"))
         accepted.refresh(db(), None if everywhere else {name})
         db().add_event(g.user["username"], "risk accepted",
                        f"{finding['CHECK']} on {'all firewalls' if everywhere else name}")
@@ -289,6 +311,7 @@ def send_to_ciso(name):
 @bp.route("/firewalls/<name>/ciso-evidence", methods=["POST"])
 @admin_required
 def ciso_evidence(name):
+    """Set the CISO Assistant evidence and folder ids of a firewall."""
     import re
 
     gw = _gateway_or_404(name)
@@ -348,6 +371,7 @@ def gateway_settings(name):
 @bp.route("/firewalls/<name>/delete", methods=["POST"])
 @admin_required
 def delete_gateway(name):
+    """Delete a firewall with all its stored analyses."""
     gw = _gateway_or_404(name)
     db().delete_gateway(gw["id"])
     db().add_event(g.user["username"], "firewall data deleted", name)
@@ -377,11 +401,12 @@ def _upload_hints(form):
 @bp.route("/uploads", methods=["GET", "POST"])
 @login_required
 def uploads():
+    """List uploaded configuration files (GET) or upload one and queue its analysis (POST)."""
     from pyfrc2g.inputs import FORMATS
 
     if request.method == "POST":
-        if g.user["role"] != "admin":
-            abort(403)
+        if not security.can("analyse") or access.is_restricted():
+            abort(403)  # A file may create a firewall outside the scope of a scoped user.
         file = request.files.get("file")
         fmt = request.form.get("format", "auto")
         if fmt not in FORMATS:
@@ -409,15 +434,23 @@ def uploads():
     from pyfrc2g_web import ciso
 
     settings = db().settings()
-    return render_template("uploads.html", uploads=db().uploads(), formats=FORMATS,
+    items = db().uploads()
+    if access.is_restricted():
+        allowed = {gw["upload_id"] for gw in access.visible_gateways(db()) if gw.get("upload_id")}
+        items = [u for u in items if u["id"] in allowed]
+    return render_template("uploads.html", uploads=items, formats=FORMATS,
                            sites=sorted(settings.get("ciso_site_folders") or {}), ciso=ciso.configured(settings))
 
 
 @bp.route("/uploads/<int:upload_id>/analyse", methods=["POST"])
-@admin_required
+@permission_required("analyse")
 def reanalyse_upload(upload_id):
+    """Queue a new analysis of a stored upload."""
     upload = db().upload(upload_id)
     if upload is None:
+        abort(404)
+    if access.is_restricted() and not any(gw.get("upload_id") == upload_id
+                                          for gw in access.visible_gateways(db())):
         abort(404)
     run_id = current_app.runner.submit("upload", f"Analysis of {upload['filename']}",
                                        [{"kind": "upload", "upload_id": upload_id}], g.user["id"])
@@ -425,10 +458,14 @@ def reanalyse_upload(upload_id):
 
 
 @bp.route("/analyse", methods=["POST"])
-@admin_required
+@permission_required("analyse")
 def analyse():
+    """Queue an API analysis of one enabled firewall, or of all of them."""
     firewall_id = request.form.get("firewall_id", type=int)
-    firewalls = [f for f in db().firewalls() if f["enabled"] and (firewall_id is None or f["id"] == firewall_id)]
+    allowed = {gw["firewall_id"] for gw in access.visible_gateways(db()) if gw.get("firewall_id")} \
+        if access.is_restricted() else None
+    firewalls = [f for f in db().firewalls() if f["enabled"] and (firewall_id is None or f["id"] == firewall_id)
+                 and (allowed is None or f["id"] in allowed)]
     if not firewalls:
         flash("No enabled firewall to analyse: add one in Administration > Firewalls.", "error")
         return redirect(request.referrer or url_for("main.dashboard"))
@@ -442,13 +479,43 @@ def analyse():
 
 
 # ---------------------------------------------------------------------------
+# Trends over time
+# ---------------------------------------------------------------------------
+
+@bp.route("/trends")
+@login_required
+def trends():
+    """Risk score, findings and permissive rules of each firewall over its stored analyses."""
+    limit = request.args.get("last", 60, type=int)
+    limit = limit if limit in (10, 30, 60, 120) else 60
+    wanted = request.args.get("firewall", "")
+    gateways = access.visible_gateways(db())
+    names = [gw["name"] for gw in gateways]
+    items = []
+    for gw in gateways:
+        if wanted and gw["name"] != wanted:
+            continue
+        points = db().trend(gw["id"], limit)
+        if not points:
+            continue
+        first, last = points[0], points[-1]
+        delta = {key: (last[key] - first[key]) if first.get(key) is not None and last.get(key) is not None else None
+                 for key in ("score", "findings", "permissive")}
+        for point in points:  # Serious findings = critical + high.
+            known = point["findings"] is not None
+            point["serious"] = (point["critical"] or 0) + (point["high"] or 0) if known else None
+        items.append({"gw": gw, "points": points, "delta": delta, "last": last})
+    return render_template("trends.html", items=items, names=names, wanted=wanted, limit=limit)
+
+
+# ---------------------------------------------------------------------------
 # Comparison of two analyses
 # ---------------------------------------------------------------------------
 
 def _compare_side(value):
     """'firewall|analysis id' (or 'firewall' = latest analysis) -> (gateway, analysis) or (None, None)."""
     name, _, analysis_id = (value or "").partition("|")
-    gw = next((x for x in db().gateways() if x["name"] == name), None)
+    gw = next((x for x in access.visible_gateways(db()) if x["name"] == name), None)
     if gw is None:
         return None, None
     analyses = db().analyses(gw["id"])
@@ -458,18 +525,20 @@ def _compare_side(value):
 
 
 def _finding_keys(data):
+    """Index the audit findings by (check, rule)."""
     return {(f["CHECK"], f["RULE"]): f for f in data.get("audit") or []}
 
 
 @bp.route("/compare")
 @login_required
 def compare():
+    """Show the differences between two analyses (rules, NAT, findings)."""
     from pyfrc2g.analysis.compare import compare_nat, compare_rules
 
     from pyfrc2g_web import exceptions as accepted
 
     choices = []
-    for gw in db().gateways():
+    for gw in access.visible_gateways(db()):
         choices.append({"name": gw["name"], "analyses": db().analyses(gw["id"])})
     gw_a, analysis_a = _compare_side(request.args.get("a"))
     gw_b, analysis_b = _compare_side(request.args.get("b"))
@@ -494,26 +563,21 @@ def compare():
 
 
 # ---------------------------------------------------------------------------
-# Export of the dashboard (Excel / PDF), same site / tag filters
+# Export of the dashboard (Excel / PDF)
 # ---------------------------------------------------------------------------
 
 @bp.route("/export.<fmt>")
 @login_required
 def export(fmt):
+    """Download the dashboard (same site / tag filters) as an Excel or PDF report."""
     from datetime import datetime
 
-    from pyfrc2g_web import exceptions as accepted
     from pyfrc2g_web import exports
 
     if fmt not in ("xlsx", "pdf"):
         abort(404)
     _, gateways, _, _, site, tag = _filtered_gateways()
-    exceptions = db().exceptions()
-    items = []
-    for gw in gateways:
-        analyses = db().analyses(gw["id"])
-        data = accepted.apply(db().analysis(analyses[0]["id"])["data"], exceptions, gw["name"]) if analyses else None
-        items.append({"gateway": gw, "data": data})
+    items = exports.collect(db(), gateways)
     scope = " · ".join(part for part in (f"site {site}" if site else "", f"tag {tag}" if tag else "") if part)
     content, mime = exports.build(fmt, items, scope or "all firewalls")
     db().add_event(g.user["username"], "export", f"{fmt} {scope or 'all firewalls'}")
@@ -524,7 +588,7 @@ def export(fmt):
 
 
 # ---------------------------------------------------------------------------
-# Documentation (HOW_IT_WORKS.md of the repository, copied in docs/)
+# Documentation (HOW_IT_WORKS.md of the repository, copied to docs/)
 # ---------------------------------------------------------------------------
 
 def _render_doc():
@@ -555,14 +619,18 @@ def help_page():
 @bp.route("/runs")
 @login_required
 def runs():
-    return render_template("runs.html", runs=db().runs(limit=200))
+    return render_template("runs.html", runs=_visible_runs(200))
 
 
 @bp.route("/runs/<int:run_id>")
 @login_required
 def run(run_id):
+    """Progress and log of a run."""
     item = db().run(run_id)
     if item is None:
+        abort(404)
+    if access.is_restricted() and not (set(item["gateways"]) & access.visible_names(db())
+                                       or item.get("user_id") == g.user["id"]):
         abort(404)
     return render_template("run.html", run=item, active=item["status"] in ("queued", "running"))
 
@@ -574,7 +642,11 @@ def run(run_id):
 @bp.route("/account", methods=["GET", "POST"])
 @login_required
 def account():
-    if request.method == "POST":
+    """Change the own password (local accounts only)."""
+    from pyfrc2g_web.oidc import is_sso_user
+
+    sso = is_sso_user(g.user)  # Managed by the identity provider: no local password.
+    if request.method == "POST" and not sso:
         current = request.form.get("current", "")
         new = request.form.get("new", "")
         if not security.check_password(g.user, current):
@@ -589,7 +661,7 @@ def account():
             security.login_user(db().user(user_id=g.user["id"]))  # Keep this session valid.
             flash("Password changed. Other sessions were signed out.", "ok")
             return redirect(url_for("main.account"))
-    return render_template("account.html")
+    return render_template("account.html", sso=sso, scope_text=access.describe(access.user_scope()))
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +669,7 @@ def account():
 # ---------------------------------------------------------------------------
 
 def register_error_handlers(app):
+    """Render error.html for the common HTTP errors."""
     messages = {400: "Bad request", 403: "Access denied", 404: "Page not found",
                 413: "File too large", 500: "Internal error"}
 

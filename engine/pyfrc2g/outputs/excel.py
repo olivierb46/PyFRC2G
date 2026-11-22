@@ -6,8 +6,8 @@ sheets, with filters, frozen header and colored rows.
 import logging
 
 from pyfrc2g.analysis.audit import AUDIT_FIELDNAMES, SEVERITIES, count_by_severity
-from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.changes import CHANGES_FIELDNAMES, count_changes
+from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.hits import HITS_FIELDNAMES
 from pyfrc2g.analysis.matrix import STATUS_COLORS
 from pyfrc2g.model.nat import NAT_FIELDNAMES
@@ -52,7 +52,7 @@ def _xlsx_sheet(wb, title, fieldnames, rows, color_of=None):
 
 
 def write_xlsx_report(report, path, rule_fieldnames):
-    """Excel workbook: Summary, Rules, Audit, Changes, NAT sheets (with filters)."""
+    """Write the Excel report to path and return it, or return None if openpyxl is missing."""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font

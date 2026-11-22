@@ -49,7 +49,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 .span-2 { grid-column: span 2; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); min-width: 0; }
 .card + .card { margin-top: 0; }
-.section { margin-top: 22px; }
+.section, .card + .card.section { margin-top: 22px; }
 .kpi { display: flex; flex-direction: column; gap: 2px; }
 .kpi .value { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; }
 .kpi .label { color: var(--muted); font-size: 13px; }
@@ -88,15 +88,41 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 form.inline { display: inline; }
 form.inline-row { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 form.inline-row input.w-id { width: 340px; max-width: 100%; }
+
+/* Form controls: one look for every text-like input, select and textarea. :where() keeps the
+   specificity at zero so that the local rules (filters, login card, inline forms) still win. */
 label { display: block; font-weight: 600; margin: 14px 0 5px; }
-label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin: 6px 0; }
 .help { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
-input[type=text], input[type=password], input[type=url], input[type=number], select, textarea {
-  width: 100%; max-width: 560px; font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; }
+:where(input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=range]):not([type=color]), select, textarea) {
+  width: 100%; max-width: 560px; min-height: 38px; box-sizing: border-box; font: inherit; line-height: 1.4;
+  color: var(--fg); background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; }
+:where(input, select, textarea)::placeholder { color: var(--muted); opacity: .75; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+:where(input, select, textarea):disabled { background-color: var(--panel-2); color: var(--muted); cursor: not-allowed; opacity: .7; }
+select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 34px; text-overflow: ellipsis;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+select:disabled { cursor: not-allowed; }
+option, optgroup { background: var(--panel); color: var(--fg); }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
 textarea { max-width: none; min-height: 140px; font-family: var(--mono); font-size: 12.5px; }
 textarea.tall { min-height: 360px; }
-input[type=file] { max-width: 100%; }
+input[type=file] { max-width: 100%; font: inherit; color: var(--muted); }
+input[type=file]::file-selector-button { font: inherit; font-weight: 600; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; margin-right: 10px; cursor: pointer; }
+/* Widths and groups */
+input.w-xs, select.w-xs { width: 6rem; }
+input.w-sm, select.w-sm { width: 10rem; }
+input.w-wide { width: 22rem; }
+.field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.field-row label { margin: 0; }
+/* Compact controls in inline forms (tables, toolbars) */
+form.inline-row { align-items: center; }
+form.inline-row label { margin: 0; }
+form.inline-row :where(input:not([type=hidden]):not([type=checkbox]), select) { width: auto; min-width: 9rem; min-height: 30px; padding: 3px 9px; font-size: 13px; }
+form.inline-row select { padding-right: 30px; }
+form.inline-row .btn { min-height: 30px; box-sizing: border-box; }
 .form-actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
 fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 4px 16px 16px; margin: 18px 0 0; }
 legend { font-weight: 650; padding: 0 6px; }
@@ -123,7 +149,7 @@ tbody tr:hover { background: var(--panel-2); }
 tbody tr:last-child td { border-bottom: none; }
 tr.disabled td { color: var(--muted); text-decoration: line-through; }
 td.num, th.num { text-align: right; }
-.filters input { width: 100%; min-width: 70px; padding: 4px 7px; font-size: 12px; border-radius: 6px; }
+.filters input { width: 100%; min-width: 70px; min-height: 0; padding: 4px 7px; font-size: 12px; border-radius: 6px; }
 .table-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .table-tools input { max-width: 340px; }
 .table-tools .count { color: var(--muted); font-size: 12.5px; }

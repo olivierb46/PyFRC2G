@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Notifications &amp; reports</h1>
+<div class="sub">Alerts after an analysis (new critical finding, risk drift) and periodic reports by email.</div></div></div>
+
+<div class="card">
+  <h2>Mail server</h2>
+  {% if cfg.smtp %}
+  <p>Sending through <b>{{ cfg.smtp.host }}:{{ cfg.smtp.port }}</b> ({{ cfg.smtp.security }}) as <b>{{ cfg.smtp.from }}</b>.
+  {% if cfg.allowed_domains %} Recipients limited to: {{ cfg.allowed_domains|join(", ") }}.{% else %} <span class="muted">Any recipient domain (<code>PYFRC2G_MAIL_ALLOWED_DOMAINS</code> restricts it).</span>{% endif %}</p>
+  {% else %}
+  <p class="muted">No mail server: set <code>PYFRC2G_SMTP_HOST</code>, <code>PYFRC2G_SMTP_FROM</code> (and optionally <code>_PORT</code>, <code>_SECURITY</code>, <code>_USER</code>, <code>_PASSWORD</code>) and restart. Webhook, Slack and Teams channels work without it.</p>
+  {% endif %}
+  <form method="post" class="inline-row">{{ csrf() }}<input type="hidden" name="action" value="drift">
+    <label for="notify_drift">Risk drift threshold (points)</label>
+    <input type="number" class="w-xs" id="notify_drift" name="notify_drift" min="0" max="100" value="{{ drift }}">
+    <button class="btn">Save</button>
+  </form>
+  <div class="help">An analysis whose score rises by at least this much raises the <i>Risk score rise</i> event. 0 = never.</div>
+</div>
+
+<div class="card section">
+  <h2>Alert channels</h2>
+  {% if channels %}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Kind</th><th>Target</th><th>Events</th><th>Content</th><th>Scope</th><th></th></tr></thead><tbody>
+  {% for c in channels %}<tr{% if not c.enabled %} class="muted"{% endif %}>
+    <td><b>{{ c.name }}</b>{% if not c.enabled %} <span class="badge">off</span>{% endif %}</td>
+    <td>{{ c.kind }}</td><td class="small mono">{{ c.shown }}</td>
+    <td class="small">{% for e in c.events %}{{ event_labels.get(e, e) }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    <td>{{ c.detail }}</td><td class="small">{{ c.scope and "limited" or "all firewalls" }}</td>
+    <td class="nowrap">
+      {% for action, label, cls in (("channel_test", "Test", "secondary"), ("channel_toggle", "Disable" if c.enabled else "Enable", "secondary"), ("channel_delete", "Delete", "danger")) %}
+      <form class="inline" method="post"{% if action == "channel_delete" %} data-confirm="Delete the channel {{ c.name }}?"{% endif %}>{{ csrf() }}<input type="hidden" name="action" value="{{ action }}"><input type="hidden" name="channel_id" value="{{ c.id }}"><button class="btn small {{ cls }}">{{ label }}</button></form>
+      {% endfor %}
+    </td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="muted">No channel.</p>{% endif %}
+
+  <h3>Add a channel</h3>
+  <form method="post">{{ csrf() }}<input type="hidden" name="action" value="add_channel">
+    <div class="grid cols-2">
+      <div><label for="c_name">Name</label><input type="text" id="c_name" name="name" required maxlength="60"></div>
+      <div><label for="c_kind">Kind</label><select id="c_kind" name="kind">{% for value, label in kinds %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="c_target">Recipients (email) or webhook URL</label><input type="text" id="c_target" name="target" required autocomplete="off">
+        <div class="help">Emails separated by commas, or an <code>https://</code> URL. It is stored encrypted and never shown again. Slack: hooks.slack.com; Teams: webhook.office.com / logic.azure.com. Other targets must not be private addresses.</div></div>
+      <div><label for="c_secret">Signing secret (webhook only)</label><input type="password" id="c_secret" name="secret" autocomplete="new-password">
+        <div class="help">Optional: adds <code>X-PyFRC2G-Signature: sha256=HMAC(body)</code>.</div></div>
+    </div>
+    <label>Events</label>
+    <div class="checks">{% for value, label in events %}<label class="check"><input type="checkbox" name="events" value="{{ value }}"{% if value in ("critical", "drift") %} checked{% endif %}> {{ label }}</label>{% endfor %}</div>
+    <div class="grid cols-2">
+      <div><label for="c_detail">Content</label><select id="c_detail" name="detail"><option value="minimal">Minimal: firewall, score, counts</option><option value="full">Detailed: also the new findings (rule, check, detail)</option></select>
+        <div class="help">Prefer <i>minimal</i> for external services (Slack, Teams): findings describe your network.</div></div>
+      <div><label for="c_scope">Limit to firewalls (optional)</label><input type="text" id="c_scope" name="scope" placeholder="site: Paris; tag: prod; fw: fw1"><div class="help">Empty = every firewall.</div></div>
+    </div>
+    <div class="form-actions"><button class="btn">Add the channel</button></div>
+  </form>
+</div>
+
+<div class="card section">
+  <h2>Scheduled reports</h2>
+  {% if schedules %}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Format</th><th>When</th><th>Filter</th><th>Recipients</th><th>Last sent</th><th></th></tr></thead><tbody>
+  {% for s in schedules %}<tr{% if not s.enabled %} class="muted"{% endif %}>
+    <td><b>{{ s.name }}</b>{% if not s.enabled %} <span class="badge">off</span>{% endif %}</td><td>{{ s.format|upper }}</td><td class="small">{{ s.when }}</td>
+    <td class="small">{{ ("site " ~ s.site) if s.site }}{{ " " if s.site and s.tag }}{{ ("tag " ~ s.tag) if s.tag }}{{ "all" if not s.site and not s.tag }}</td>
+    <td class="small">{{ s.recipients|join(", ") }}</td><td class="nowrap muted">{{ s.last_sent }}</td>
+    <td class="nowrap">
+      {% for action, label, cls in (("schedule_send", "Send now", "secondary"), ("schedule_toggle", "Disable" if s.enabled else "Enable", "secondary"), ("schedule_delete", "Delete", "danger")) %}
+      <form class="inline" method="post"{% if action == "schedule_delete" %} data-confirm="Delete the schedule {{ s.name }}?"{% endif %}>{{ csrf() }}<input type="hidden" name="action" value="{{ action }}"><input type="hidden" name="schedule_id" value="{{ s.id }}"><button class="btn small {{ cls }}">{{ label }}</button></form>
+      {% endfor %}
+    </td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="muted">No schedule.</p>{% endif %}
+
+  <h3>Add a schedule</h3>
+  <form method="post">{{ csrf() }}<input type="hidden" name="action" value="add_schedule">
+    <div class="grid cols-3">
+      <div><label for="s_name">Name</label><input type="text" id="s_name" name="name" required maxlength="60"></div>
+      <div><label for="s_format">Format</label><select id="s_format" name="format"><option value="pdf">PDF summary</option><option value="xlsx">Excel workbook</option></select></div>
+      <div><label for="s_frequency">Frequency</label><select id="s_frequency" name="frequency">{% for value, label in frequencies %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="s_weekday">Weekday <span class="muted">(weekly)</span></label><select id="s_weekday" name="weekday">{% for d in ("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday") %}<option value="{{ loop.index0 }}">{{ d }}</option>{% endfor %}</select></div>
+      <div><label for="s_monthday">Day of the month <span class="muted">(monthly, 1-28)</span></label><input type="number" id="s_monthday" name="monthday" min="1" max="28" value="1"></div>
+      <div><label for="s_hour">Hour <span class="muted">(server time, 0-23)</span></label><input type="number" id="s_hour" name="hour" min="0" max="23" value="7"></div>
+      <div><label for="s_site">Site <span class="muted">(optional)</span></label><input type="text" id="s_site" name="site" maxlength="64"></div>
+      <div><label for="s_tag">Tag <span class="muted">(optional)</span></label><input type="text" id="s_tag" name="tag" maxlength="64"></div>
+    </div>
+    <label for="s_rcpt">Recipients</label><input type="text" id="s_rcpt" name="recipients" required placeholder="ciso@example.org, soc@example.org"{% if not cfg.smtp %} disabled{% endif %}>
+    {% if not cfg.smtp %}<div class="help">A mail server is required (see above).</div>{% endif %}
+    <div class="form-actions"><button class="btn"{% if not cfg.smtp %} disabled{% endif %}>Add the schedule</button></div>
+  </form>
+</div>
+{% endblock %}

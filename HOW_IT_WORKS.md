@@ -134,7 +134,7 @@ Commented example: `engine/examples/policy.example.yml`.
 ## 7. Accepted risks (exceptions)
 
 A finding can be **accepted**: the risk is known and justified (legacy VPN, end-of-life
-equipment...). From the **Audit** tab of a firewall, an administrator gives:
+equipment...). From the **Audit** tab of a firewall, an administrator (or an operator, see below) gives:
 
 - the **justification** (required), an **owner** and an **expiry date** (optional);
 - the scope: **this rule only** or **every rule** raising this check;
@@ -151,6 +151,20 @@ Effect:
 
 On the command line: `pyfrc2g --backup config.xml --exceptions exceptions.yml`
 (example: `engine/examples/exceptions.example.yml`).
+
+**Approval workflow (web application).** Who accepts a risk matters:
+
+- an **administrator**'s acceptance applies at once;
+- an **operator** only *proposes* it: it stays **pending** until an administrator approves or rejects
+  it (Administration > Accepted risks). Pending and rejected proposals are **never applied**: the
+  finding keeps counting. Who proposed and who decided are recorded;
+- with `PYFRC2G_RISK_FOUR_EYES=1`, every acceptance, administrators' included, must be approved by
+  **another** administrator (nobody approves their own);
+- a reminder event, *accepted risk expiring*, is emitted once a day `PYFRC2G_RISK_REMINDER_DAYS` days
+  (default 14) before each expiry. It is in the event log and goes to the SIEM (section 15). The
+  Accepted risks page shows the days left.
+
+The engine only receives the **approved** exceptions.
 
 ## 8. The zone matrix
 
@@ -236,10 +250,66 @@ The **metadata** of every report gives the integrity proof: the SHA-256 fingerpr
 | **Configuration files** | Upload a file (with name, site and CISO ids if you want); every firewall coming from a file has its own **Settings** page. |
 | **Compare** | Comparison of two firewalls or two analyses. |
 | **Analyses** | Journal of the analyses, with their live log. |
-| **Administration** | API firewalls, global settings, policies per site / tag, accepted risks, CISO Assistant, users, event log. |
+| **Trends** | Per firewall, over the stored analyses: risk score, findings, overly permissive rules (any → any), critical + high findings, number of rules. |
+| **Administration** | API firewalls, global settings, policies per site / tag, accepted risks, CISO Assistant, users, sessions, backup and keys, event log. |
 
-Two roles: **admin** (configures, analyses, accepts risks) and **viewer** (reads the results and
-the reports).
+### Roles
+
+| Role | Can |
+|------|-----|
+| **admin** | Everything: configuration, firewalls, users, sessions, backups, approval of accepted risks. |
+| **operator** | Runs analyses, uploads files, *proposes* accepted risks. Does not manage firewalls, users or settings. |
+| **auditor** | Reads everything, exports the reports, reads the event log and the accepted risks. Changes nothing. |
+| **viewer** | Reads the dashboards, reports and graphs, and exports them. |
+
+With single sign-on, the groups of the identity provider are mapped to roles
+(`PYFRC2G_OIDC_ADMIN_GROUPS`, `..._OPERATOR_GROUPS`, `..._AUDITOR_GROUPS`, `..._VIEWER_GROUPS`); when
+a user belongs to several, the most privileged role wins. The role is recomputed at each sign-in.
+
+### Firewall scope
+
+A user other than an administrator can be limited to some firewalls, by **name, site or tag**
+(Administration > Users, e.g. `site: Paris; tag: prod; fw: fw-edge1`: a firewall is visible if it
+matches any item). With single sign-on, a **group → scope** table does it automatically, e.g.
+`team-paris = site:Paris`, evaluated at each sign-in. As soon as the table has rules, an SSO user in
+none of the listed groups sees **no firewall** (deny by default).
+
+A scoped user only sees their firewalls on the dashboard, exports, comparison, analyses and trends. For
+the others the application answers *not found*, as if they did not exist. A scoped operator cannot
+upload files (that could create a firewall outside the scope) nor accept a risk on all firewalls.
+Administrators are never restricted; the event log and the accepted risks list are not filtered
+either (visible to admins and auditors).
+
+### Notifications and scheduled reports
+
+Administration > Notifications. After each analysis the application compares the result with the
+**previous analysis of the same firewall** and can alert on:
+
+- a **new critical** (or **high**) finding: one that was not in the previous analysis (accepted risks are
+  not findings, so they never alert; a finding whose acceptance has expired does);
+- a **rise of the risk score** by at least a threshold (10 points by default);
+- a **new permissive rule** (any → any checks);
+- a **failed analysis**.
+
+A given finding is announced once. The very first analysis of a firewall is the baseline: it sends nothing.
+Alerts go to **channels**: email, JSON webhook (signed with an HMAC if a secret is set), Slack or Microsoft
+Teams. Each channel picks its events, may be limited to some firewalls (site, tag or name) and sends either
+**minimal** content (firewall, score, number of new findings: the safe choice for an external service) or the
+**detailed** list of new findings.
+
+**Scheduled reports** e-mail the dashboard export (PDF or Excel, optionally for one site or tag) every day,
+week or month to a list of recipients.
+
+Safeguards: TLS with certificate verification for mail; webhook URLs in `https://` only, Slack / Teams URLs
+restricted to the vendors' domains, no webhook towards private or local addresses (SSRF), no redirect followed;
+recipients can be restricted to given domains (`PYFRC2G_MAIL_ALLOWED_DOMAINS`). URLs, secrets and recipients
+are encrypted in the database; each delivery (or failure) is in the event log.
+
+### Sessions
+
+Administration > Sessions lists the signed-in browsers and revokes them one by one or per user.
+Deleting a user or changing a password ends their sessions. `PYFRC2G_MAX_SESSIONS` limits the
+simultaneous sessions per user: the oldest is closed.
 
 **Settings**: every firewall can override the global settings (Internet-facing interfaces, ports,
 policy, schedule, retention, reports, CISO Assistant, site, owner, tags). An empty field uses the
@@ -274,7 +344,22 @@ and in Administration > CISO Assistant. The token is encrypted and never display
   database with the application key (`PYFRC2G_SECRET_KEY`, keep it apart from the database:
   without it the data cannot be read).
 - Analyses run in a private temporary folder that is deleted afterwards.
-- An **event log** keeps the sign-ins, changes, uploads, accepted risks and exports.
+- An **event log** keeps the sign-ins, changes (roles, scopes), uploads, accepted risks and exports.
+  It can be downloaded as CSV or JSON lines.
+- **SIEM export**: each event can also be sent as one JSON object (`app`, `host`, `time`,
+  `username`, `action`, `detail`) to a syslog server (`PYFRC2G_AUDIT_SYSLOG`) and/or an HTTPS webhook
+  (`PYFRC2G_AUDIT_WEBHOOK`, optionally signed with an HMAC `X-PyFRC2G-Signature` through
+  `PYFRC2G_AUDIT_WEBHOOK_SECRET`). A collector that is down never blocks the application: delivery
+  is retried a few times, in the background.
+- **Backup**: Administration > Backup & keys downloads a consistent copy of the database,
+  encrypted with a passphrase chosen at download (not stored). It is restored with the application
+  stopped (`pyfrc2g-web --restore-backup FILE`); both the passphrase **and** `PYFRC2G_SECRET_KEY` are
+  needed, since the content is also encrypted with the application key.
+- **Key rotation**: put the new key in `PYFRC2G_SECRET_KEY` and the previous one in
+  `PYFRC2G_SECRET_KEY_OLD`, restart, click *Re-encrypt* (the page counts the values still using an old
+  key), then remove the old key.
+- **Failed sign-ins** are throttled; with Redis (`PYFRC2G_REDIS_URL`) the counters are shared by all
+  instances, and so are the sessions with single sign-on.
 - The number of analyses kept per firewall is limited (retention); the oldest ones, with their
   reports, are deleted.
 

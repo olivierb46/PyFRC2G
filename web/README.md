@@ -19,7 +19,7 @@ repository. The image stays small, and updating does not need a rebuild.
 ```bash
 git clone https://github.com/olivierb46/PyFRC2G.git
 cd PyFRC2G/web
-cp .env.example .env                 # PYFRC2G_SECRET_KEY, PYFRC2G_ADMIN_USER / PYFRC2G_ADMIN_PASSWORD
+cp .env.example .env                 # works as is: sign in as admin, then change the password
 docker compose up -d --build         # http://localhost:8080
 ```
 
@@ -83,12 +83,15 @@ above (`pyfrc2g-web` declares `pyfrc2g>=2.3.0`).
 - **API firewalls** (admin): pfSense / OPNsense / nfSensei (API key) with their credentials, TLS verification and internal CA; connection test; "analyse now" and automatic analysis on a schedule; per-firewall options (see below)
 - **Settings** (admin): schedule, number of analyses kept, audit parameters (WAN interfaces, administration / sensitive ports, unused days) and the compliance policy edited and validated in the page
 - **Compare**: two firewalls or two analyses of the same firewall (rules, NAT rules, findings)
-- **Accepted risks** (admin): accept a finding from the Audit tab with a justification, owner and optional expiry date, for one rule or a whole check, on one firewall or all of them; it leaves the findings and the risk score (until it expires), and stays listed with its reason (Administration > Accepted risks). The engine receives the accepted risks too: the PDF, HTML and Excel reports and the risk score leave them out and list them in an “Accepted risks” section with their justification; adding or removing an exception regenerates the reports of the affected firewalls (API firewalls are read again, files analysed again)
+- **Accepted risks** (admin; operators propose, an administrator approves, see below): accept a finding from the Audit tab with a justification, owner and optional expiry date, for one rule or a whole check, on one firewall or all of them; it leaves the findings and the risk score (until it expires), and stays listed with its reason (Administration > Accepted risks). The engine receives the accepted risks too: the PDF, HTML and Excel reports and the risk score leave them out and list them in an “Accepted risks” section with their justification; adding or removing an exception regenerates the reports of the affected firewalls (API firewalls are read again, files analysed again)
 - **Policies by site / tag** (admin): compliance policies added to the global one for the firewalls of a site or carrying a tag (Administration > Policies)
 - **Export** of the dashboard (same site / tag filters) as an Excel workbook (summary, findings, accepted risks, changes) or a PDF summary for reviews
 - **CISO Assistant** (admin): send the PDF report of an analysis as a new revision of an evidence, manually from the firewall page or automatically after each new analysis; default evidence plus one evidence per firewall, connection test, history of the uploads
 - **How it works**: the page rendered from [`HOW_IT_WORKS.md`](../HOW_IT_WORKS.md) (analysis steps, findings, risk score, accepted risks, reports, CISO Assistant). The application serves its copy `pyfrc2g_web/docs/how-it-works.md`: after editing the file at the repository root, run `cp HOW_IT_WORKS.md web/pyfrc2g_web/docs/how-it-works.md`
-- **Users** (admin): `admin` (configuration, analyses, users) and `viewer` (reports, graphs) roles; **event log** of sign-ins, changes, uploads and manual analyses
+- **Users** (admin): `admin`, `operator`, `auditor` and `viewer` roles, optional firewall scope per user or per SSO group; **sessions** (list, revoke, limit); **event log** of sign-ins, changes, uploads and analyses, exportable (CSV / JSON, SIEM)
+- **Notifications** (admin): alerts (email, webhook, Slack, Teams) on new critical findings or risk drift, scheduled PDF / Excel reports by email
+- **Trends**: risk score, findings, permissive rules and rule count over time, per firewall
+- **Backup & keys** (admin): encrypted backup download, key rotation (see below)
 
 ### Firewall options
 
@@ -150,6 +153,134 @@ clear on disk.
 | Schedule | Settings page (default interval; each firewall can have its own or be manual only), or `--every` / `PYFRC2G_SCHEDULE` at start-up | none |
 | Upload limit | `PYFRC2G_WEB_MAX_UPLOAD_MB` | 50 (a full nfSensei backup `.tar.gz` can be several hundred MB: only its `running.yaml` is kept) |
 | Behind a reverse proxy | `PYFRC2G_WEB_PROXY=1` (trust `X-Forwarded-*`), `PYFRC2G_WEB_SECURE_COOKIES=1` (HTTPS only cookies) | off |
+
+### Single sign-on (OpenID Connect)
+
+Optional: `pip install "pyfrc2g-web[oidc]"` (flask-oidc + Flask-Session, already in `requirements.txt` /
+the Docker image), then set `PYFRC2G_OIDC_ISSUER`, `PYFRC2G_OIDC_CLIENT_ID` and
+`PYFRC2G_OIDC_CLIENT_SECRET` (see `.env.example`). Declare this redirect URI at the identity
+provider: `https://<your-host>/oidc/authorize`. The login page then shows a "Sign in with SSO" button.
+
+- Users are created at first sign-in, without a local password. Their role is recomputed at each
+  sign-in: members of `PYFRC2G_OIDC_ADMIN_GROUPS` (claim `PYFRC2G_OIDC_GROUPS_CLAIM`, default
+  `groups`) are administrators, the others get `PYFRC2G_OIDC_DEFAULT_ROLE` (default `viewer`);
+  `PYFRC2G_OIDC_ALLOWED_GROUPS` restricts who may sign in at all.
+- An SSO user whose name equals a local account is refused (no takeover of a local administrator).
+- Sessions become server-side (files in `<data dir>/sessions`, mode 0700; the cookie holds only a
+  random identifier, renewed at sign-in). Sign-out ends the application session, not the one at the
+  identity provider. Local accounts keep working as a break-glass access.
+
+### Roles, firewall scopes and sessions
+
+| Role | Can |
+|---|---|
+| `admin` | everything: configuration, firewalls, users, sessions, backups, approval of accepted risks |
+| `operator` | run analyses (API firewalls, re-analysis), upload files, *propose* accepted risks |
+| `auditor` | read everything, export reports, read the event log and the accepted risks (read only) |
+| `viewer` | read dashboards, reports and graphs, export them |
+
+With SSO, groups map to roles: `PYFRC2G_OIDC_ADMIN_GROUPS`, `..._OPERATOR_GROUPS`, `..._AUDITOR_GROUPS`,
+`..._VIEWER_GROUPS` (the most privileged matching role wins). Existing `viewer` / `admin` accounts keep
+their role (the users table is migrated automatically at start-up).
+
+**Firewall scope.** A non-administrator can be limited to some firewalls, by name, site or tag
+(Administration > Users: `site: Paris, Lyon; tag: prod; fw: fw-edge1`). For SSO users, a mapping
+`idp-group = site:Paris, tag:acme` (same page) is evaluated at each sign-in; once a rule exists, an SSO
+user matching none of the groups sees no firewall. A scoped user only sees their firewalls on the
+dashboard, exports, comparison, analyses and trends; the others answer 404. A scoped operator cannot
+upload files (they could create a firewall outside the scope) nor accept a risk on "all firewalls".
+
+**Sessions.** *Administration > Sessions* lists the signed-in browsers (user, address, browser, last
+activity) and revokes one session or all the sessions of a user; a deleted user or a changed password also
+ends their sessions. `PYFRC2G_MAX_SESSIONS=N` limits the simultaneous sessions per user (the oldest is
+revoked). Works with and without SSO.
+
+**Accepted risks.** An administrator's acceptance applies at once; an operator's is a *proposal* that
+an administrator approves or rejects (*Administration > Accepted risks*, who proposed and who decided are
+kept). Pending and rejected proposals are never applied. `PYFRC2G_RISK_FOUR_EYES=1`: every acceptance,
+administrators' included, must be approved by *another* administrator. Once a day an `accepted risk
+expiring` event is emitted `PYFRC2G_RISK_REMINDER_DAYS` days (default 14) before each expiry; it appears in
+the event log and reaches the SIEM / webhook below. The page also shows the days left.
+
+**Trends.** *Trends* charts, for each firewall, the risk score, the findings, the overly permissive rules
+(any → any checks), the critical + high findings and the number of rules over the stored analyses (last
+10 to 120). The figures are kept in clear columns: older analyses are filled in at the first start-up.
+
+### Audit export (SIEM)
+
+Every event of the log (sign-in, failed sign-in, role / scope change, deletion, accepted risk, backup...)
+can also be sent as JSON, one object per event: `{"app", "host", "time", "username", "action", "detail"}`.
+
+| Variable | Meaning |
+|---|---|
+| `PYFRC2G_AUDIT_SYSLOG` | `udp://host:514`, `tcp://host:514` or `unix:///dev/log` |
+| `PYFRC2G_AUDIT_WEBHOOK` | `https://collector/events`: JSON `POST`, 3 attempts, bounded queue, no redirect |
+| `PYFRC2G_AUDIT_WEBHOOK_SECRET` | optional: `X-PyFRC2G-Signature: sha256=<HMAC of the body>` |
+| `PYFRC2G_AUDIT_WEBHOOK_TOKEN` | optional: `Authorization: Bearer ...` |
+
+An unreachable collector never blocks the application. The log can also be downloaded
+(*Event log > CSV / JSON lines*, spreadsheet formulas neutralised).
+
+### Backup and key rotation
+
+*Administration > Backup & keys*: download a consistent snapshot of the database encrypted with a
+passphrase you choose (scrypt + Fernet; not stored). Restore with the application stopped:
+`pyfrc2g-web --restore-backup FILE --data-dir DIR [--force]`; you need the passphrase **and**
+`PYFRC2G_SECRET_KEY` (the content is encrypted with it too).
+
+Key rotation: new key in `PYFRC2G_SECRET_KEY`, previous one in `PYFRC2G_SECRET_KEY_OLD`, restart, click
+*Re-encrypt* on that page (it shows how many values still use an old key), then remove the old key.
+
+### Notifications and scheduled reports
+
+*Administration > Notifications* (administrators). Mail server in the environment (`PYFRC2G_SMTP_HOST`,
+`_PORT`, `_SECURITY`, `_USER`, `_PASSWORD`, `_FROM`, see `.env.example`); channels and schedules in the page.
+
+**Alerts.** After each analysis, the new findings and the rise of the risk score compared with the
+previous analysis of the firewall are sent to the channels that subscribed: email, JSON webhook (optional
+HMAC signature `X-PyFRC2G-Signature`), Slack, Microsoft Teams. Events: new critical finding, new high
+finding, risk score rise (threshold in points, default 10), new permissive rule (any), analysis failed. A
+finding is announced once; the first analysis of a firewall is the baseline and sends nothing. A channel
+can be limited to some firewalls (`site: Paris; tag: prod; fw: fw1`) and sends either *minimal* content
+(firewall, score, counts) or the *detailed* new findings. *Test* sends a harmless message.
+
+**Scheduled reports.** The PDF or Excel export of the dashboard, optionally filtered by site or tag, is
+e-mailed every day, week or month (hour of the server) to a list of recipients; *Send now* triggers one. After
+a stop of the application the missed report is sent once at restart.
+
+**Security.** Mail uses STARTTLS or TLS with certificate verification (`none` only for a server on the
+machine itself); recipients are validated (no header injection) and can be restricted with
+`PYFRC2G_MAIL_ALLOWED_DOMAINS` so that a compromised admin account cannot send reports elsewhere. Webhook
+URLs must be `https://`; Slack and Teams URLs must belong to the vendors' domains
+(`PYFRC2G_NOTIFY_WEBHOOK_HOSTS` adds some); a generic webhook may not resolve to a private, loopback or
+link-local address (checked when it is saved and at each delivery; `PYFRC2G_NOTIFY_ALLOW_PRIVATE=1` lifts
+it for an internal collector); redirects are not followed. URLs, secrets and recipients are encrypted in the
+database, never shown again, and included in the backup and the key rotation. Messages are sent in the
+background (3 attempts) so a collector that is down never slows an analysis; every success or failure is in
+the event log (class of the error only, never the URL).
+
+### Tests
+
+`pip install -e "./web[dev]"` then `pytest web/tests` (roles, scopes, sessions, shared throttle, audit
+export, backup, key rotation, trends, accepted-risk workflow, SSO flow with a fake identity provider).
+
+**Redis session store (optional).** By default sessions are files in `<data dir>/sessions`. For several
+instances, or to keep sessions out of the data volume, use Redis. With Docker, in `.env`:
+
+```
+COMPOSE_PROFILES=redis
+PYFRC2G_REDIS_URL=redis://pyfrc2g@redis:6379/0
+PYFRC2G_REDIS_PASSWORD=<openssl rand -base64 36 | tr -d '/+='>
+```
+
+The `redis` service of `docker-compose.yml` is hardened: internal network without outside route and no
+published port, `default` user disabled, one ACL user limited to `session:*` keys without admin or
+dangerous commands, nothing persisted to disk, read-only filesystem, no capabilities, memory limit.
+The application refuses a Redis without password, checks it at start-up (fails fast) and never logs the
+URL. For an external Redis use `rediss://` (TLS, certificate verified, `PYFRC2G_REDIS_CA` for a private CA).
+When `PYFRC2G_REDIS_URL` is set, the sign-in throttle (5 failures / 10 minutes) is also shared through Redis
+(hashed keys `throttle:*`), so it holds with several instances; it falls back to memory if Redis fails.
+Redis is used with or without SSO.
 
 ### Security
 

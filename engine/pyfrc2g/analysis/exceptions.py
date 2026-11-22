@@ -4,7 +4,7 @@ Accepted risks (exceptions file, YAML or JSON).
 Example (exceptions.yml):
 
     exceptions:
-      - check: WAN_ANY_ANY            # check name of the audit finding (or POLICY:<id>)
+      - check: WAN_EXPOSED            # check name of the audit finding (or POLICY:<id>)
         rule: "12"                    # optional: RULE ID or rule summary; empty = every rule
         gateway: fw-paris             # optional: firewall name; empty = every firewall
         reason: Legacy VPN, replaced in Q3
@@ -49,7 +49,7 @@ def matches(exception, finding, gateway):
 
 
 def split(findings, exceptions, gateway, today=None):
-    """(active findings, accepted findings with REASON / OWNER / EXPIRES) for a firewall."""
+    """Return (active findings, accepted findings with REASON / OWNER / EXPIRES) for a firewall."""
     active, accepted = [], []
     for finding in findings:
         exception = next((e for e in exceptions if is_active(e, today) and matches(e, finding, gateway)), None)
@@ -62,7 +62,7 @@ def split(findings, exceptions, gateway, today=None):
 
 
 def parse_exceptions(text):
-    """Parse and validate an exceptions file. Raises ExceptionsError."""
+    """Parse and validate the text of an exceptions file; raise ExceptionsError if invalid."""
     try:
         import yaml
 

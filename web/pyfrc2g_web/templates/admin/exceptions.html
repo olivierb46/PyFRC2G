@@ -3,14 +3,18 @@
 {% block title %}Accepted risks{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>Accepted risks</h1>
-<div class="sub">Findings accepted with a justification: they are left out of the findings and of the risk score until they expire or are removed. Accept a finding from the <b>Audit</b> tab of a firewall.</div></div></div>
+<div class="sub">Findings accepted with a justification: they are left out of the findings and of the risk score until they expire or are removed. An operator's acceptance is a <b>proposal</b> that an administrator approves or rejects{% if four_eyes %} (four eyes: nobody approves their own proposal){% endif %}. Accept a finding from the <b>Audit</b> tab of a firewall. Expiry reminders start {{ days }} days before.</div></div></div>
 {% if items %}
-<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Firewall</th><th>Rule</th><th>Reason</th><th>Owner</th><th>Expires</th><th>Accepted by</th><th></th></tr></thead><tbody>
+<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Firewall</th><th>Rule</th><th>Reason</th><th>Owner</th><th>Expires</th><th>Proposed / accepted by</th><th>Decision</th><th></th></tr></thead><tbody>
 {% for e in items %}{% set expired = e.expires and e.expires < today %}<tr>
-<td>{{ badge("expired", "MEDIUM") if expired else badge("active", "ok") }}</td>
+<td>{% if e.status == 'pending' %}{{ badge("pending approval", "MEDIUM") }}{% elif e.status == 'rejected' %}{{ badge("rejected", "CRITICAL") }}{% elif expired %}{{ badge("expired", "MEDIUM") }}{% elif e.id in soon %}{{ badge("expires in " ~ soon[e.id] ~ " d", "HIGH") }}{% else %}{{ badge("active", "ok") }}{% endif %}</td>
 <td class="mono">{{ e.check_name }}</td><td>{{ e.gateway or "all firewalls" }}</td><td class="small">{{ e.rule_key or "every rule" }}</td>
 <td>{{ e.reason }}</td><td>{{ e.owner or "—" }}</td><td class="nowrap">{{ e.expires or "never" }}</td><td class="muted small">{{ e.username }}<br>{{ e.created }}</td>
-<td><form class="inline" method="post" action="{{ url_for('admin.delete_exception', exception_id=e.id) }}" data-confirm="Remove this accepted risk? The finding will count again.">{{ csrf() }}<button class="btn small danger">Remove</button></form></td>
+<td class="muted small">{% if e.approver %}{{ e.approver }}<br>{{ e.decided }}{% else %}—{% endif %}</td>
+<td class="nowrap">{% if can('approve_risk') %}
+{% if e.status == 'pending' %}<form class="inline" method="post" action="{{ url_for('admin.decide_exception', exception_id=e.id) }}">{{ csrf() }}<input type="hidden" name="decision" value="approve"><button class="btn small">Approve</button></form>
+<form class="inline" method="post" action="{{ url_for('admin.decide_exception', exception_id=e.id) }}" data-confirm="Reject this proposal?">{{ csrf() }}<input type="hidden" name="decision" value="reject"><button class="btn small secondary">Reject</button></form>{% endif %}
+<form class="inline" method="post" action="{{ url_for('admin.delete_exception', exception_id=e.id) }}" data-confirm="Remove this accepted risk? The finding will count again.">{{ csrf() }}<button class="btn small danger">Remove</button></form>{% endif %}</td>
 </tr>{% endfor %}</tbody></table></div>
 {% else %}<div class="card empty">No accepted risk.</div>{% endif %}
 {% endblock %}

@@ -1,11 +1,14 @@
 """
-Administration pages (role admin): API firewalls, settings (schedule, audit, compliance
-policy), users, event log. Secrets are never sent back to the browser: an empty secret field
-keeps the stored value.
+Administration pages: API firewalls, settings, CISO Assistant, users, event log, sessions,
+notifications, backup, policies and accepted risks. Most require the admin role (see each
+route's permission). Secrets are never sent back to the browser: an empty secret field keeps
+the stored value.
 """
 
+import json
 import os
 import re
+import sqlite3
 
 from flask import (
     Blueprint,
@@ -19,9 +22,9 @@ from flask import (
     url_for,
 )
 
-from pyfrc2g_web import security
+from pyfrc2g_web import access, security
 from pyfrc2g_web.fwopts import ports
-from pyfrc2g_web.security import admin_required
+from pyfrc2g_web.security import admin_required, permission_required
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -41,6 +44,7 @@ def db():
 @bp.route("/firewalls")
 @admin_required
 def firewalls():
+    """List the API firewalls."""
     from pyfrc2g_web import fwopts
 
     items = db().firewalls()
@@ -102,6 +106,7 @@ def _firewall_view(existing):
 
 
 def _gateway_of(firewall_id):
+    """Return the gateway analysed from this API firewall, if any."""
     return next((gw for gw in db().gateways() if gw["firewall_id"] == firewall_id), None)
 
 
@@ -109,6 +114,7 @@ def _gateway_of(firewall_id):
 @bp.route("/firewalls/<int:firewall_id>", methods=["GET", "POST"])
 @admin_required
 def firewall(firewall_id=None):
+    """Add or edit an API firewall, optionally testing the connection or starting an analysis."""
     existing = db().firewall(firewall_id) if firewall_id else None
     if firewall_id and existing is None:
         abort(404)
@@ -155,6 +161,7 @@ def firewall(firewall_id=None):
 @bp.route("/firewalls/<int:firewall_id>/delete", methods=["POST"])
 @admin_required
 def delete_firewall(firewall_id):
+    """Delete an API firewall; its stored analyses are kept."""
     existing = db().firewall(firewall_id)
     if existing is None:
         abort(404)
@@ -171,6 +178,7 @@ def delete_firewall(firewall_id):
 @bp.route("/settings", methods=["GET", "POST"])
 @admin_required
 def settings():
+    """Global settings: schedule, retention, analysis thresholds and compliance policy."""
     from pyfrc2g.analysis.policy import PolicyError, parse_policy
     from pyfrc2g.config import parse_duration
 
@@ -280,6 +288,7 @@ def _ciso_form(current):
 
 
 def _ciso_view(values):
+    """Values shown by the CISO Assistant form (secrets replaced by flags)."""
     view = {key: values.get(key, "") for key in CISO_FIELDS}
     view.update(site_folders="\n".join(f"{site}={folder}" for site, folder in
                                        (values.get("ciso_site_folders") or {}).items()),
@@ -292,6 +301,7 @@ def _ciso_view(values):
 @bp.route("/ciso", methods=["GET", "POST"])
 @admin_required
 def ciso():
+    """CISO Assistant integration settings, with an optional connection test."""
     from pyfrc2g_web import ciso as ciso_client
 
     current = db().settings()
@@ -321,6 +331,7 @@ def ciso():
 @bp.route("/users", methods=["GET", "POST"])
 @admin_required
 def users():
+    """List local and SSO users (GET) or create a local user (POST)."""
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         role = request.form.get("role", "viewer")
@@ -335,16 +346,44 @@ def users():
         elif db().user(username=username):
             flash(f"User {username} already exists.", "error")
         else:
-            db().create_user(username, security.hash_password(password), role)
-            db().add_event(g.user["username"], "user created", f"{username} ({role})")
+            try:
+                scope = access.parse_scope_text(request.form.get("scope", "")) if role != "admin" else None
+            except access.ScopeError as e:
+                flash(str(e), "error")
+                return redirect(url_for("admin.users"))
+            user_id = db().create_user(username, security.hash_password(password), role)
+            db().update_user(user_id, scope=scope)
+            db().add_event(g.user["username"], "user created", f"{username} ({role}; {access.describe(scope)})")
             flash(f"User {username} created.", "ok")
         return redirect(url_for("admin.users"))
-    return render_template("admin/users.html", users=db().users(), roles=security.ROLES)
+    users_list = db().users()
+    for u in users_list:
+        u["scope_view"] = access.scope_text(access.parse_scope(u["scope"])) if u["role"] != "admin" else ""
+        u["restricted"] = u["role"] != "admin" and bool(u["scope"])
+        u["sessions"] = len(db().sessions(u["id"]))
+    return render_template("admin/users.html", users=users_list, roles=security.ROLES, role_help=security.ROLE_HELP,
+                           group_scopes=access.group_scopes_text(db().settings().get("group_scopes")))
+
+
+@bp.route("/users/group-scopes", methods=["POST"])
+@admin_required
+def group_scopes():
+    """Mapping identity-provider groups -> firewalls (sites, tags, names) for the SSO users."""
+    try:
+        rules = access.parse_group_scopes(request.form.get("group_scopes", ""))
+    except access.ScopeError as e:
+        flash(str(e), "error")
+    else:
+        db().save_settings({"group_scopes": rules})
+        db().add_event(g.user["username"], "group scopes saved", f"{len(rules)} rule(s)")
+        flash(f"{len(rules)} group scope rule(s) saved: they apply at the next sign-in of each SSO user.", "ok")
+    return redirect(url_for("admin.users"))
 
 
 @bp.route("/users/<int:user_id>", methods=["POST"])
 @admin_required
 def update_user(user_id):
+    """Delete a user or change their role, scope or password (action field)."""
     user = db().user(user_id=user_id)
     if user is None:
         abort(404)
@@ -366,12 +405,23 @@ def update_user(user_id):
             flash("At least one administrator is required.", "error")
         else:
             db().update_user(user_id, role=role)
-            db().add_event(g.user["username"], "role changed", f"{user['username']}: {role}")
+            db().add_event(g.user["username"], "role changed", f"{user['username']}: {user['role']} -> {role}")
             flash(f"{user['username']} is now {role}.", "ok")
+    elif action == "scope":
+        try:
+            scope = access.parse_scope_text(request.form.get("scope", ""))
+        except access.ScopeError as e:
+            flash(str(e), "error")
+        else:
+            db().update_user(user_id, scope=scope)
+            db().add_event(g.user["username"], "scope changed", f"{user['username']}: {access.describe(scope)}")
+            flash(f"Scope of {user['username']}: {access.describe(scope)}.", "ok")
     elif action == "password":
         password = request.form.get("password", "")
         problem = security.password_problem(password)
-        if problem:
+        if user["password_hash"] == "!oidc":
+            flash(f"{user['username']} signs in through the identity provider: no local password.", "error")
+        elif problem:
             flash(problem, "error")
         else:
             db().update_user(user_id, password_hash=security.hash_password(password))
@@ -381,9 +431,255 @@ def update_user(user_id):
 
 
 @bp.route("/events")
-@admin_required
+@permission_required("audit")
 def events():
-    return render_template("admin/events.html", events=db().events())
+    """Show the event log."""
+    return render_template("admin/events.html", events=db().events(), export=current_app.db.on_event is not None)
+
+
+@bp.route("/events.<fmt>")
+@permission_required("audit")
+def events_export(fmt):
+    """Download of the event log (JSON lines or CSV), for archiving or a SIEM that pulls files."""
+    import csv
+    import io
+    import json
+
+    from flask import Response
+
+    if fmt not in ("json", "csv"):
+        abort(404)
+    rows = db().events(limit=min(request.args.get("limit", 5000, type=int), 50000))
+    fields = ("time", "username", "action", "detail")
+    if fmt == "json":
+        body, mime = "\n".join(json.dumps({k: r[k] for k in fields}, ensure_ascii=False) for r in rows), \
+            "application/x-ndjson"
+    else:
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(fields)
+        for r in rows:
+            # Prevent spreadsheet formula injection: prefix cells starting with = + - @ with a quote.
+            writer.writerow(["'" + str(r[k]) if str(r[k]).startswith(("=", "+", "-", "@")) else r[k]
+                             for k in fields])
+        body, mime = out.getvalue(), "text/csv"
+    db().add_event(g.user["username"], "event log exported", fmt)
+    response = Response(body, mimetype=mime)
+    extension = "csv" if fmt == "csv" else "jsonl"
+    response.headers["Content-Disposition"] = f'attachment; filename="pyfrc2g-events.{extension}"'
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Active sessions
+# ---------------------------------------------------------------------------
+
+@bp.route("/sessions", methods=["GET", "POST"])
+@admin_required
+def sessions():
+    """List active sessions and revoke one (token) or all of a user (user_id)."""
+    if request.method == "POST":
+        token, user_id = request.form.get("token"), request.form.get("user_id", type=int)
+        if token:
+            target = next((s for s in db().sessions() if s["token"] == token), None)
+            if target and db().delete_sessions(token=token):
+                db().add_event(g.user["username"], "session revoked", f"{target['username']} from {target['address']}")
+                flash(f"Session of {target['username']} revoked.", "ok")
+        elif user_id is not None:
+            user = db().user(user_id=user_id)
+            count = db().delete_sessions(user_id=user_id, except_token=g.session_token)
+            if user:
+                db().add_event(g.user["username"], "sessions revoked", f"{user['username']}: {count}")
+                flash(f"{count} session(s) of {user['username']} revoked.", "ok")
+        return redirect(url_for("admin.sessions"))
+    return render_template("admin/sessions.html", sessions=db().sessions(), current=g.session_token,
+                           limit=current_app.config.get("MAX_SESSIONS", 0))
+
+
+# ---------------------------------------------------------------------------
+# Notifications and scheduled reports
+# ---------------------------------------------------------------------------
+
+_LABEL = re.compile(r"^\w[\w .:-]{0,59}$", re.UNICODE)
+
+
+def _add_channel(notifier, form):
+    """Validate the form and create a notification channel. Raises NotifyError."""
+    from pyfrc2g_web import notify
+
+    cfg = notifier.cfg
+    name, kind = form.get("name", "").strip(), form.get("kind", "")
+    if not _LABEL.match(name):
+        raise notify.NotifyError("Name: 1 to 60 letters, digits, spaces, '.', ':' or '-'.")
+    if kind not in dict(notify.KINDS):
+        raise notify.NotifyError("Unknown kind of channel.")
+    events = [e for e in form.getlist("events") if e in dict(notify.EVENTS)]
+    if not events:
+        raise notify.NotifyError("Choose at least one event.")
+    if kind == "email":
+        if cfg["smtp"] is None:
+            raise notify.NotifyError("No mail server configured (PYFRC2G_SMTP_HOST).")
+        target = json.dumps(notify.parse_recipients(form.get("target"), cfg))
+    else:
+        target = notify.check_url(kind, form.get("target"), cfg)
+    secret = form.get("secret", "")[:200] if kind == "webhook" else ""
+    try:
+        scope = access.parse_scope_text(form.get("scope"))
+    except access.ScopeError as e:
+        raise notify.NotifyError(str(e)) from e
+    detail = "full" if form.get("detail") == "full" else "minimal"
+    try:
+        return db().add_channel(name, kind, target, secret, events, detail, scope, g.user["username"]), name, kind
+    except sqlite3.IntegrityError as e:
+        raise notify.NotifyError("A channel has this name.") from e
+
+
+def _add_schedule(notifier, form):
+    """Validate the form and create a scheduled e-mail report. Raises NotifyError."""
+    from pyfrc2g_web import notify
+
+    name = form.get("name", "").strip()
+    if not _LABEL.match(name):
+        raise notify.NotifyError("Name: 1 to 60 letters, digits, spaces, '.', ':' or '-'.")
+    if notifier.cfg["smtp"] is None:
+        raise notify.NotifyError("No mail server configured (PYFRC2G_SMTP_HOST).")
+    fmt, frequency = form.get("format", ""), form.get("frequency", "")
+    if fmt not in ("pdf", "xlsx") or frequency not in dict(notify.FREQUENCIES):
+        raise notify.NotifyError("Choose a format and a frequency.")
+    weekday, monthday, hour = (form.get("weekday", type=int, default=0), form.get("monthday", type=int, default=1),
+                               form.get("hour", type=int, default=7))
+    if not (0 <= weekday <= 6 and 1 <= monthday <= 28 and 0 <= hour <= 23):
+        raise notify.NotifyError("Invalid day or hour (day of the month: 1 to 28).")
+    site, tag = notify.clean(form.get("site"), 64), notify.clean(form.get("tag"), 64)
+    recipients = notify.parse_recipients(form.get("recipients"), notifier.cfg)
+    try:
+        return db().add_schedule(name, fmt, frequency, weekday, monthday, hour, recipients, site, tag,
+                                 g.user["username"]), name
+    except sqlite3.IntegrityError as e:
+        raise notify.NotifyError("A schedule has this name.") from e
+
+
+@bp.route("/notifications", methods=["GET", "POST"])
+@admin_required
+def notifications():
+    """Notification channels, drift threshold and scheduled reports (action field selects the operation)."""
+    from pyfrc2g_web import notify
+
+    notifier = db().notifier
+    user = g.user["username"]
+    if request.method == "POST":
+        form, action = request.form, request.form.get("action", "")
+        channel_id, schedule_id = form.get("channel_id", type=int), form.get("schedule_id", type=int)
+        channel = db().channel(channel_id) if channel_id else None
+        schedule = db().schedule(schedule_id) if schedule_id else None
+        try:
+            if action == "add_channel":
+                _, name, kind = _add_channel(notifier, form)
+                db().add_event(user, "notification channel added", f"{name} ({kind})")
+                flash(f"Channel {name} added. Use Test to check it.", "ok")
+            elif action == "drift":
+                value = form.get("notify_drift", type=int, default=10)
+                if not 0 <= value <= 100:
+                    raise notify.NotifyError("Threshold between 0 (never) and 100 points.")
+                db().save_settings({"notify_drift": value})
+                db().add_event(user, "notification threshold changed", f"{value} points")
+                flash("Threshold saved.", "ok")
+            elif action == "add_schedule":
+                _, name = _add_schedule(notifier, form)
+                db().add_event(user, "report schedule added", name)
+                flash(f"Schedule {name} added.", "ok")
+            elif channel and action in ("channel_toggle", "channel_delete", "channel_test"):
+                if action == "channel_delete":
+                    db().delete_channel(channel["id"])
+                elif action == "channel_toggle":
+                    db().set_channel_enabled(channel["id"], not channel["enabled"])
+                else:
+                    notify.test_message(notifier, channel)
+                    flash("Test queued: the result is in the event log.", "ok")
+                db().add_event(user, f"notification channel {action.split('_')[1]}", channel["name"])
+            elif schedule and action in ("schedule_toggle", "schedule_delete", "schedule_send"):
+                if action == "schedule_delete":
+                    db().delete_schedule(schedule["id"])
+                elif action == "schedule_toggle":
+                    db().set_schedule_enabled(schedule["id"], not schedule["enabled"])
+                elif notify.send_report(db(), notifier, schedule, "manual"):
+                    flash("Report queued: the result is in the event log.", "ok")
+                else:
+                    flash("The report could not be built (see the event log).", "error")
+                db().add_event(user, f"report schedule {action.split('_')[1]}", schedule["name"])
+            else:
+                abort(400)
+        except notify.NotifyError as e:
+            flash(str(e), "error")
+        return redirect(url_for("admin.notifications"))
+    channels = db().channels()
+    for channel in channels:
+        channel["shown"] = notify.describe_target(channel)
+    schedules = db().schedules()
+    for schedule in schedules:
+        schedule["when"] = notify.describe_schedule(schedule)
+    return render_template("admin/notifications.html", channels=channels, schedules=schedules, cfg=notifier.cfg,
+                           kinds=notify.KINDS, events=notify.EVENTS,
+                           event_labels=dict(notify.EVENTS), frequencies=notify.FREQUENCIES,
+                           drift=db().settings().get("notify_drift"))
+
+
+# ---------------------------------------------------------------------------
+# Backup and key rotation
+# ---------------------------------------------------------------------------
+
+@bp.route("/backup", methods=["GET", "POST"])
+@admin_required
+def backup():
+    """Download an encrypted backup or re-encrypt stored values with the current key."""
+    from pyfrc2g_web import backup as backups
+
+    action = request.form.get("action") if request.method == "POST" else None
+    if action == "download":
+        passphrase = request.form.get("passphrase", "")
+        if passphrase != request.form.get("confirm", ""):
+            flash("The passphrases do not match.", "error")
+        else:
+            try:
+                path = backups.make_backup(db(), os.path.join(current_app.data_dir, "tmp"), passphrase)
+            except backups.BackupError as e:
+                flash(str(e), "error")
+            else:
+                return _send_and_delete(path)
+    elif action == "rotate":
+        status = backups.rotation_status(db())
+        if not status["old"]:
+            flash("Nothing to re-encrypt: every value already uses the current key.", "ok")
+        else:
+            count = backups.rotate(db())
+            db().add_event(g.user["username"], "key rotation", f"{count} value(s) re-encrypted")
+            flash(f"{count} value(s) re-encrypted with the current key. You can now remove "
+                  "PYFRC2G_SECRET_KEY_OLD and restart.", "ok")
+        return redirect(url_for("admin.backup"))
+    return render_template("admin/backup.html", status=backups.rotation_status(db()),
+                           old_key=bool(os.environ.get("PYFRC2G_SECRET_KEY_OLD", "").strip()),
+                           min_length=backups.MIN_PASSPHRASE)
+
+
+def _send_and_delete(path):
+    """Stream the file to the client, then delete it."""
+    from datetime import datetime
+
+    from flask import Response
+
+    def stream():
+        try:
+            with open(path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            os.unlink(path)
+
+    db().add_event(g.user["username"], "backup downloaded", f"{os.path.getsize(path)} bytes")
+    response = Response(stream(), mimetype="application/octet-stream")
+    response.headers["Content-Disposition"] = f'attachment; filename="pyfrc2g-{datetime.now():%Y%m%d-%H%M}.bak"'
+    response.headers["Content-Length"] = str(os.path.getsize(path))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +705,7 @@ def _scope_choices():
 @bp.route("/policies", methods=["GET", "POST"])
 @admin_required
 def policies():
+    """Manage compliance policies scoped to a site or a tag."""
     from pyfrc2g.analysis.policy import PolicyError, parse_policy
 
     items = list(db().settings().get("scoped_policies") or [])
@@ -456,16 +753,51 @@ def policies():
 # ---------------------------------------------------------------------------
 
 @bp.route("/exceptions")
-@admin_required
+@permission_required("audit")
 def exceptions():
+    """List accepted risks with their approval status and upcoming expirations."""
     from datetime import date
 
-    return render_template("admin/exceptions.html", items=db().exceptions(), today=date.today().isoformat())
+    from pyfrc2g_web import exceptions as accepted
+
+    items = db().exceptions()
+    days = current_app.config.get("RISK_REMINDER_DAYS", 14)
+    soon = {e["id"]: left for e, left in accepted.expiring(items, days)}
+    return render_template("admin/exceptions.html", items=items, today=date.today().isoformat(), soon=soon,
+                           days=days, four_eyes=current_app.config.get("RISK_FOUR_EYES"))
+
+
+@bp.route("/exceptions/<int:exception_id>/decide", methods=["POST"])
+@permission_required("approve_risk")
+def decide_exception(exception_id):
+    """Approve or reject a proposed accepted risk. With four eyes the proposer cannot approve their own."""
+    from pyfrc2g_web import exceptions as accepted
+
+    item = next((e for e in db().exceptions() if e["id"] == exception_id), None)
+    if item is None or item["status"] != "pending":
+        abort(404)
+    approve = request.form.get("decision") == "approve"
+    if approve and item["username"] == g.user["username"] and current_app.config.get("RISK_FOUR_EYES"):
+        flash("Four eyes: another administrator must approve a risk you proposed.", "error")
+        return redirect(url_for("admin.exceptions"))
+    db().decide_exception(exception_id, approve, g.user["username"])
+    db().add_event(g.user["username"], "risk approved" if approve else "risk rejected",
+                   f"{item['check_name']} on {item['gateway'] or 'all firewalls'} (proposed by {item['username']})")
+    if not approve:
+        flash("Proposal rejected.", "ok")
+        return redirect(url_for("admin.exceptions"))
+    names = None if not item["gateway"] else {item["gateway"]}
+    accepted.refresh(db(), names)
+    run_id = accepted.regenerate(current_app, db(), names, g.user["id"])
+    flash("Risk approved: the finding no longer counts."
+          + (" The PDF, HTML and Excel reports are being regenerated." if run_id else ""), "ok")
+    return redirect(url_for("main.run", run_id=run_id) if run_id else url_for("admin.exceptions"))
 
 
 @bp.route("/exceptions/<int:exception_id>/delete", methods=["POST"])
-@admin_required
+@permission_required("approve_risk")
 def delete_exception(exception_id):
+    """Remove an accepted risk so the finding counts again."""
     from pyfrc2g_web import exceptions as accepted
 
     item = next((e for e in db().exceptions() if e["id"] == exception_id), None)

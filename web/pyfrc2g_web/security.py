@@ -1,11 +1,12 @@
 """
-Authentication and request protection: user sessions, roles (admin / viewer), CSRF tokens,
-sign-in throttling and security headers.
+Authentication and request protection: user sessions (revocable), roles and permissions,
+CSRF tokens, sign-in throttling (in memory or shared through Redis) and security headers.
 """
 
 import functools
 import hashlib
 import hmac
+import logging
 import secrets
 import threading
 import time
@@ -13,49 +14,98 @@ import time
 from flask import abort, current_app, g, redirect, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ("admin", "viewer")
+# Roles, from the most to the least privileged (the first matching role wins for SSO users).
+ROLES = ("admin", "operator", "auditor", "viewer")
+ROLE_HELP = {
+    "admin": "everything: configuration, firewalls, users, accepted-risk approval",
+    "operator": "runs analyses and uploads files, proposes accepted risks (an admin approves them)",
+    "auditor": "reads everything, exports reports, event log and accepted risks (read only)",
+    "viewer": "reads dashboards, reports and graphs, exports them",
+}
+PERMISSIONS = {
+    "viewer": frozenset({"view", "export"}),
+    "auditor": frozenset({"view", "export", "audit"}),
+    "operator": frozenset({"view", "export", "analyse", "propose_risk"}),
+    "admin": frozenset({"view", "export", "audit", "analyse", "propose_risk", "approve_risk", "manage"}),
+}
 MIN_PASSWORD_LENGTH = 10
 MAX_FAILURES = 5
 LOCK_SECONDS = 600
 
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
        "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'")
-# Generated HTML reports use inline styles / scripts; shown in a sandboxed context.
+# Generated HTML reports use inline styles and scripts: served sandboxed.
 REPORT_CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
               "img-src data:; sandbox allow-scripts")
 SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
 
 
 def hash_password(password):
+    """Return a salted hash of the password (werkzeug format)."""
     return generate_password_hash(password)
 
 
 def password_problem(password):
+    """Return a message if the password is too weak, else None."""
     if len(password or "") < MIN_PASSWORD_LENGTH:
         return f"The password must have at least {MIN_PASSWORD_LENGTH} characters."
     return None
 
 
 class Throttle:
-    """Locks sign-in for an address (and a user name) after MAX_FAILURES failures."""
+    """
+    Locks sign-in for an address (and a user name) after MAX_FAILURES failures within LOCK_SECONDS.
+    In memory by default; with a Redis client the counters are shared by every instance (keys are
+    hashed: no user name or address is stored in clear). Falls back to memory if Redis fails.
+    """
 
-    def __init__(self):
+    def __init__(self, redis_client=None):
         self.failures = {}
         self.lock = threading.Lock()
+        self.redis = redis_client
+
+    @staticmethod
+    def _key(key):
+        return "throttle:" + hashlib.sha256(key.encode()).hexdigest()[:32]
+
+    def _redis_call(self, action):
+        if self.redis is None:
+            return None, False
+        try:
+            return action(self.redis), True
+        except Exception as e:  # redis.RedisError, but the import is optional
+            logging.warning(f"Redis throttle unavailable ({e.__class__.__name__}): using the local counters")
+            return None, False
 
     def blocked(self, *keys):
+        def check(r):
+            values = r.mget([self._key(k) for k in keys])
+            return any(int(v or 0) >= MAX_FAILURES for v in values)
+
+        shared, ok = self._redis_call(check)
+        if ok and shared:
+            return True
         now = time.time()
         with self.lock:
             return any(len([t for t in self.failures.get(k, []) if now - t < LOCK_SECONDS]) >= MAX_FAILURES
                        for k in keys)
 
     def fail(self, *keys):
+        def count(r):
+            pipe = r.pipeline()
+            for key in keys:
+                pipe.incr(self._key(key))
+                pipe.expire(self._key(key), LOCK_SECONDS)
+            pipe.execute()
+
+        self._redis_call(count)
         now = time.time()
         with self.lock:
             for key in keys:
                 self.failures[key] = [t for t in self.failures.get(key, []) if now - t < LOCK_SECONDS] + [now]
 
     def reset(self, *keys):
+        self._redis_call(lambda r: r.delete(*[self._key(k) for k in keys]))
         with self.lock:
             for key in keys:
                 self.failures.pop(key, None)
@@ -67,27 +117,42 @@ def _password_marker(password_hash):
 
 
 def login_user(user):
-    session.clear()  # New session id content: no fixation.
+    """Start a fresh registered session for the user."""
+    regenerate = getattr(current_app.session_interface, "regenerate", None)
+    if regenerate:  # Server-side sessions (Flask-Session): new identifier, no fixation.
+        session["_rotate"] = True  # regenerate() ignores an empty session.
+        regenerate(session)
+    session.clear()  # New session content: no fixation.
     session.permanent = True
     session["uid"] = user["id"]
     session["pw"] = _password_marker(user["password_hash"])
     session["csrf"] = secrets.token_urlsafe(32)
+    # Registered session: listed and revocable by the administrators, limited per user.
+    session["tok"] = secrets.token_urlsafe(24)
+    lifetime = current_app.config["PERMANENT_SESSION_LIFETIME"]
+    current_app.db.add_session(session["tok"], user["id"], request.remote_addr or "?",
+                               request.headers.get("User-Agent", ""), lifetime.total_seconds(),
+                               current_app.config.get("MAX_SESSIONS", 0))
 
 
 def load_user():
     """before_request: g.user from the session (None if signed out or password changed)."""
     g.user = None
+    g.session_token = None
     uid = session.get("uid")
     if uid is None:
         return
     user = current_app.db.user(user_id=uid)
-    if user is None or session.get("pw") != _password_marker(user["password_hash"]):
-        session.clear()
+    if (user is None or session.get("pw") != _password_marker(user["password_hash"])
+            or user["role"] not in ROLES or not current_app.db.session_alive(session.get("tok") or "")):
+        session.clear()  # Password changed, user deleted, or session revoked.
         return
     g.user = user
+    g.session_token = session["tok"]
 
 
 def csrf_token():
+    """Return the session CSRF token, creating it if needed."""
     if "csrf" not in session:
         session["csrf"] = secrets.token_urlsafe(32)
     return session["csrf"]
@@ -103,7 +168,26 @@ def check_csrf():
         abort(400, "Invalid or expired form. Reload the page and try again.")
 
 
+def can(permission):
+    """True if the signed-in user has the permission (also available in the templates)."""
+    return g.get("user") is not None and permission in PERMISSIONS.get(g.user["role"], ())
+
+
+def permission_required(permission):
+    """Decorator: require sign-in and the given permission (403 otherwise)."""
+    def decorator(view):
+        @functools.wraps(view)
+        @login_required
+        def wrapper(*args, **kwargs):
+            if not can(permission):
+                abort(403)
+            return view(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 def login_required(view):
+    """Decorator: redirect anonymous users to the sign-in page."""
     @functools.wraps(view)
     def wrapper(*args, **kwargs):
         if g.user is None:
@@ -113,13 +197,7 @@ def login_required(view):
 
 
 def admin_required(view):
-    @functools.wraps(view)
-    @login_required
-    def wrapper(*args, **kwargs):
-        if g.user["role"] != "admin":
-            abort(403)
-        return view(*args, **kwargs)
-    return wrapper
+    return permission_required("manage")(view)
 
 
 def safe_next(target):
@@ -130,6 +208,7 @@ def safe_next(target):
 
 
 def security_headers(response):
+    """after_request: add the security headers (CSP is kept if the view already set one)."""
     response.headers.setdefault("Content-Security-Policy", CSP)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -143,4 +222,5 @@ def security_headers(response):
 
 
 def check_password(user, password):
+    """True if the user exists and the password matches its hash."""
     return user is not None and check_password_hash(user["password_hash"], password or "")

@@ -14,13 +14,13 @@
       {% if analysis and analyses and analysis.id != analyses[0].id %}<span class="badge MEDIUM">older analysis</span>{% endif %}</div>
   </div>
   <div class="actions">
-    {% if g.user.role == 'admin' %}
-      {% if gw.kind == 'api' and gw.firewall_id %}<form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}
+    {% if can('analyse') or can('manage') %}
+      {% if gw.kind == 'api' and gw.firewall_id and can('analyse') %}<form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}
         <input type="hidden" name="firewall_id" value="{{ gw.firewall_id }}"><input type="hidden" name="force" value="1"><button class="btn">Analyse now</button></form>{% endif %}
-      {% if data and ciso.configured %}<form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}
+      {% if data and ciso.configured and can('manage') %}<form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}
         <input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn secondary" {{ 'disabled' if not ciso.evidence }} title="{{ 'Evidence ' ~ ciso.evidence if ciso.evidence else 'No evidence id' }}">Send to CISO Assistant</button></form>{% endif %}
-      {% if gw.kind == 'upload' %}<a class="btn secondary" href="{{ url_for('main.gateway_settings', name=gw.name) }}">Settings</a>{% endif %}
-      {% if gw.kind == 'upload' and gw.upload_id %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=gw.upload_id) }}">{{ csrf() }}<button class="btn secondary">Analyse the file again</button></form>{% endif %}
+      {% if gw.kind == 'upload' and can('manage') %}<a class="btn secondary" href="{{ url_for('main.gateway_settings', name=gw.name) }}">Settings</a>{% endif %}
+      {% if gw.kind == 'upload' and gw.upload_id and can('analyse') %}<form class="inline" method="post" action="{{ url_for('main.reanalyse_upload', upload_id=gw.upload_id) }}">{{ csrf() }}<button class="btn secondary">Analyse the file again</button></form>{% endif %}
     {% endif %}
   </div>
 </div>
@@ -66,25 +66,25 @@
 
 {% elif tab == "audit" %}
 {% call(field, value) data_table("audit", ["SEVERITY", "CHECK", "GATEWAY", "RULE ORDER", "RULE", "DETAIL"], data.audit, empty="No finding: nothing to report.") %}{% if field == "SEVERITY" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}
-{% if g.user.role == 'admin' and data.audit %}
+{% if can('propose_risk') and data.audit %}
 <details class="card section"><summary><b>Accept a finding</b> <span class="muted">(justified risk: it leaves the findings and the score)</span></summary>
 <form method="post" action="{{ url_for('main.accept_finding', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}">
   <label for="acc-finding">Finding</label>
   <select id="acc-finding" name="finding">{% for f in data.audit %}<option value="{{ loop.index0 }}">{{ f.SEVERITY }} · {{ f.CHECK }} · #{{ f["RULE ORDER"] }} {{ f.GATEWAY }} · {{ f.RULE[:90] }}</option>{% endfor %}</select>
   <div class="grid cols-2">
     <div><label for="acc-scope">Applies to</label><select id="acc-scope" name="scope"><option value="rule">This rule only</option><option value="check">Every rule raising this check</option></select></div>
-    <div><label for="acc-where">On</label><select id="acc-where" name="where"><option value="this">{{ gw.name }}</option><option value="all">All firewalls</option></select></div>
+    <div><label for="acc-where">On</label><select id="acc-where" name="where"><option value="this">{{ gw.name }}</option>{% if not is_restricted() %}<option value="all">All firewalls</option>{% endif %}</select></div>
     <div><label for="acc-owner">Owner <span class="muted">(optional)</span></label><input type="text" id="acc-owner" name="owner" maxlength="64"></div>
     <div><label for="acc-expires">Expires on <span class="muted">(optional, review date)</span></label><input type="date" id="acc-expires" name="expires"></div>
   </div>
   <label for="acc-reason">Justification</label><input type="text" id="acc-reason" name="reason" maxlength="500" required>
-  <div class="form-actions"><button class="btn">Accept this risk</button></div>
+  <div class="form-actions"><button class="btn">{{ "Accept this risk" if can("approve_risk") else "Propose this risk for approval" }}</button></div>
 </form></details>
 {% endif %}
 {% if data.accepted %}
 <div class="section"><h2>Accepted risks <span class="muted small">({{ data.accepted|length }})</span></h2>
 {% call(field, value) data_table("accepted", ["SEVERITY", "CHECK", "RULE", "REASON", "OWNER", "EXPIRES"], data.accepted) %}{% if field == "SEVERITY" %}{{ badge(value) }}{% elif field == "EXPIRES" %}{{ value or "never" }}{% else %}{{ value }}{% endif %}{% endcall %}
-{% if g.user.role == 'admin' %}<p class="help"><a href="{{ url_for('admin.exceptions') }}">Manage the accepted risks</a></p>{% endif %}</div>
+{% if can('audit') %}<p class="help"><a href="{{ url_for('admin.exceptions') }}">Manage the accepted risks</a></p>{% endif %}</div>
 {% endif %}
 
 {% elif tab == "changes" %}
@@ -125,10 +125,10 @@
 </div>
 <div class="card section"><h3>CISO Assistant</h3>
   {% if not ciso.configured %}
-  <p class="muted">Not configured{% if g.user.role == 'admin' %}: <a href="{{ url_for('admin.ciso') }}">Administration &gt; CISO Assistant</a>{% endif %}.</p>
+  <p class="muted">Not configured{% if can('manage') %}: <a href="{{ url_for('admin.ciso') }}">Administration &gt; CISO Assistant</a>{% endif %}.</p>
   {% else %}
   <p>The PDF report is sent as a new revision of evidence <span class="mono">{{ ciso.evidence or "—" }}</span>{% if not ciso.own and ciso.evidence %} <span class="muted">(default evidence)</span>{% endif %} in folder <span class="mono">{{ ciso.folder or "—" }}</span>{% if ciso.folder_origin == "site" %} <span class="muted">(folder of the site {{ ciso.site }})</span>{% elif ciso.folder_origin == "default" and ciso.folder %} <span class="muted">(default folder)</span>{% endif %}{% if ciso.changes %}. The change report goes to evidence <span class="mono">{{ ciso.changes }}</span>{% endif %}{% if ciso.auto %} · <span class="badge info">automatic after each new analysis</span>{% endif %}.</p>
-  {% if g.user.role == 'admin' %}
+  {% if can('manage') %}
   <div class="actions">
     <form class="inline" method="post" action="{{ url_for('main.send_to_ciso', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}"><button class="btn" {{ 'disabled' if not ciso.evidence }}>Send analysis #{{ analysis.id }} now</button></form>
     <form class="inline-row" method="post" action="{{ url_for('main.ciso_evidence', name=gw.name) }}">{{ csrf() }}
@@ -150,7 +150,7 @@
   <div class="card"><h3>Risk score over time</h3>{{ charts.risk_line(history) }}</div>
 </div>
 <div class="section"><h2>Runs</h2>{{ runs_table(runs) }}</div>
-{% if g.user.role == 'admin' %}
+{% if can('manage') %}
 <form class="section" method="post" action="{{ url_for('main.delete_gateway', name=gw.name) }}" data-confirm="Delete every stored analysis of {{ gw.name }}?">{{ csrf() }}<button class="btn danger">Delete all data of this firewall</button></form>
 {% endif %}
 {% endif %}

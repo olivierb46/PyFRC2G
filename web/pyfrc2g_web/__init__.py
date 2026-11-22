@@ -1,29 +1,29 @@
 """
-PyFRC2G-Web: web application (Flask) for PyFRC2G - firewalls dashboard, analyses with charts
-and graphs, configuration of the API firewalls, uploads of configuration files, users.
+PyFRC2G-Web: Flask web application for PyFRC2G (firewall dashboard, analyses with charts and
+graphs, firewall API configuration, configuration file uploads, users).
 
-The analyses are done by the PyFRC2G engine (package pyfrc2g); everything is stored in an
-SQLite database whose sensitive content is encrypted (see crypto.py and db.py).
+Analyses are run by the PyFRC2G engine (package pyfrc2g); everything is stored in an SQLite
+database whose sensitive content is encrypted (see crypto.py and db.py).
 
     export PYFRC2G_SECRET_KEY=...             # encryption key (Fernet key or passphrase)
     pyfrc2g-web --create-admin admin          # first administrator (password prompted)
     pyfrc2g-web                               # http://127.0.0.1:8080
 """
 
-__version__ = "1.1.0"
-MIN_ENGINE_VERSION = (2, 3, 0)
-ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine"
-
 import logging
 import os
 import sys
 from datetime import timedelta
 
+__version__ = "1.1.0"
+MIN_ENGINE_VERSION = (2, 3, 0)
+ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine"
+
 WEB_PACKAGES = (("flask", "flask"), ("cryptography", "cryptography"))
 
 
 def check_engine():
-    """None if a compatible PyFRC2G engine is installed, else an error message."""
+    """Return None if a compatible PyFRC2G engine is installed, else an error message."""
     try:
         import pyfrc2g
     except ImportError:
@@ -44,6 +44,7 @@ DB_FILE = "pyfrc2g.db"
 
 
 def check_web_dependencies():
+    """Return None if the web packages are importable, else an install hint."""
     import importlib
 
     missing = []
@@ -66,12 +67,12 @@ def open_database(data_dir):
 
 
 def create_app(data_dir=None, start_workers=True):
-    """Flask application factory."""
+    """Build the Flask application; start_workers=False skips the job runner, scheduler and backfill."""
     from flask import Flask
     from pyfrc2g import __version__ as engine_version
     from werkzeug.middleware.proxy_fix import ProxyFix
 
-    from pyfrc2g_web import charts, filters, security
+    from pyfrc2g_web import access, audit, charts, filters, notify, oidc, redisutil, security
     from pyfrc2g_web.admin import bp as admin_bp
     from pyfrc2g_web.jobs import Runner, Scheduler
     from pyfrc2g_web.routes import bp as main_bp
@@ -81,11 +82,17 @@ def create_app(data_dir=None, start_workers=True):
     app = Flask(__name__)
     app.db = open_database(data_dir)
     app.data_dir = data_dir
-    app.throttle = security.Throttle()
+    redis_settings = redisutil.settings_from_env()  # May raise RedisConfigError.
+    redis_client = redisutil.connect(redis_settings) if redis_settings else None
+    app.redis = redis_client
+    app.throttle = security.Throttle(redis_client)  # Shared by the instances when Redis is configured.
+    audit.install(app.db)  # Forward events to syslog / webhook (PYFRC2G_AUDIT_*).
+    notify.install(app.db, start=start_workers)  # Alerts and scheduled reports by e-mail (PYFRC2G_SMTP_*).
     app.runner = app.scheduler = None
     if start_workers:
         app.runner = Runner(app.db, os.path.join(data_dir, "tmp"))
-        app.scheduler = Scheduler(app.db, app.runner)
+        reminder_days = max(1, int(os.environ.get("PYFRC2G_RISK_REMINDER_DAYS", "14") or 14))
+        app.scheduler = Scheduler(app.db, app.runner, reminder_days)
 
     max_upload = int(os.environ.get("PYFRC2G_WEB_MAX_UPLOAD_MB", "50"))
     app.config.update(
@@ -95,23 +102,44 @@ def create_app(data_dir=None, start_workers=True):
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.environ.get("PYFRC2G_WEB_SECURE_COOKIES", "").lower() in ("1", "true", "yes"),
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+        MAX_SESSIONS=max(0, int(os.environ.get("PYFRC2G_MAX_SESSIONS", "0") or 0)),  # per user, 0 = no limit
+        RISK_FOUR_EYES=os.environ.get("PYFRC2G_RISK_FOUR_EYES", "").lower() in ("1", "true", "yes"),
+        RISK_REMINDER_DAYS=max(1, int(os.environ.get("PYFRC2G_RISK_REMINDER_DAYS", "14") or 14)),
         MAX_CONTENT_LENGTH=max_upload * 1024 * 1024,
     )
     if os.environ.get("PYFRC2G_WEB_PROXY", "").lower() in ("1", "true", "yes"):
         # Behind a reverse proxy: trust X-Forwarded-For / -Proto from one hop.
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
+    oidc_settings = oidc.settings_from_env()  # Raises OidcConfigError if incomplete.
+    if oidc_settings:
+        oidc.init_app(app, data_dir, oidc_settings, redis_client)  # Server-side sessions + /oidc/* routes.
+
     app.before_request(security.load_user)
     app.before_request(security.check_csrf)
     app.after_request(security.security_headers)
     app.jinja_env.globals.update(csrf_token=security.csrf_token, charts=charts, version=__version__,
-                                 engine_version=engine_version)
+                                 engine_version=engine_version, can=security.can,
+                                 is_restricted=access.is_restricted)
     filters.register(app)
     app.register_blueprint(main_bp)
     app.register_blueprint(admin_bp)
     register_error_handlers(app)
     _bootstrap_admin(app.db)
+    if start_workers:  # Compute trend figures for analyses stored by an older version.
+        import threading
+
+        threading.Thread(target=_backfill, args=(app.db,), name="pyfrc2g-backfill", daemon=True).start()
     return app
+
+
+def _backfill(db):
+    try:
+        count = db.backfill_analysis_stats()
+        if count:
+            logging.info(f"Trends: figures computed for {count} stored analysis(es)")
+    except Exception:
+        logging.exception("Trends: backfill failed")
 
 
 def _bootstrap_admin(db):
@@ -167,7 +195,11 @@ def serve(args):
     from pyfrc2g.cli import check_dependencies
     from pyfrc2g.config import parse_duration
 
+    from pyfrc2g_web.audit import AuditConfigError
     from pyfrc2g_web.crypto import CryptoKeyError
+    from pyfrc2g_web.notify import NotifyConfigError
+    from pyfrc2g_web.oidc import OidcConfigError
+    from pyfrc2g_web.redisutil import RedisConfigError
 
     for error in (check_dependencies()[1], check_web_dependencies()):
         if error:
@@ -175,7 +207,7 @@ def serve(args):
             return 1
     try:
         app = create_app(args.data_dir)
-    except CryptoKeyError as e:
+    except (CryptoKeyError, OidcConfigError, RedisConfigError, AuditConfigError, NotifyConfigError) as e:
         logging.error(str(e))
         return 2
     if args.every:

@@ -18,7 +18,7 @@ _IGNORED_FIELDS = {"RULE ORDER", "RULE ID"}
 
 
 def read_rows(csv_path):
-    """Read a rules CSV. Returns (rows, fieldnames) or (None, None) if missing."""
+    """Read a rules CSV; return (rows, fieldnames), or (None, None) if the file is missing."""
     if not csv_path or not os.path.isfile(csv_path):
         return None, None
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -58,12 +58,7 @@ def _change(kind, row, detail=""):
 
 
 def diff_rules(previous_rows, previous_fields, current_rows):
-    """
-    Compare two rule sets.
-
-    Returns:
-        list: Change dicts (CHANGES_FIELDNAMES): ADDED, REMOVED, MODIFIED.
-    """
+    """Compare two rule sets; return change dicts (CHANGES_FIELDNAMES) of kind ADDED, MODIFIED or REMOVED."""
     # Snapshots from older versions have no RULE ID column: fall back to content matching.
     use_ids = "RULE ID" in (previous_fields or [])
     before = _index(previous_rows, use_ids)

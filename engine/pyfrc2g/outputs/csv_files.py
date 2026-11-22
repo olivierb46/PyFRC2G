@@ -1,6 +1,4 @@
-"""
-CSV files (extra keys of the rows, such as the private "_" keys, are ignored).
-"""
+"""CSV writer; extra keys in the rows (such as the private "_" keys) are ignored."""
 
 import csv
 

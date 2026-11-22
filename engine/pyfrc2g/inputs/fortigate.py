@@ -189,7 +189,7 @@ def _resolve_service(name, services, groups, depth=0):
         return [_PREDEFINED_SERVICES[key]]
     if key in WELL_KNOWN_PORTS:
         return [("tcp", str(WELL_KNOWN_PORTS[key]))]
-    return [("tcp", key)]  # Unknown predefined service: unresolved port name.
+    return [("tcp", key)]  # Unknown predefined service: kept as an unresolved port name.
 
 
 def _group_services(items):
@@ -289,6 +289,7 @@ def _parse_vips(root, maps):
 
 
 def parse(path):
+    """Parse a FortiGate backup into (maps, entries, hostname, nat_entries)."""
     with open(path, encoding="utf-8", errors="replace") as f:
         root = parse_config(f.read())
     if _find(root, "firewall policy") is None:

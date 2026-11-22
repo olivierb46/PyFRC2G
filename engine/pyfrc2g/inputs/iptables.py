@@ -83,6 +83,7 @@ def _ports(value):
 
 
 def parse(path):
+    """Parse iptables-save output into (maps, entries, None, nat_entries)."""
     maps = empty_maps()
     entries, nat = [], []
     policies = []

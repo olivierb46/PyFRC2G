@@ -1,7 +1,7 @@
 """
-PDF reports for PyFRC2G: summary page (with risk score), change / audit / zone matrix /
-rule usage / NAT tables, comparison report, and assembly of the final PDF (report pages +
-vector graph pages) with bookmarks.
+PDF reports: summary page (with risk score), change / audit / zone matrix / rule usage / NAT
+tables, comparison report, and assembly of the final PDF (report pages and vector graph
+pages) with bookmarks.
 """
 
 import functools
@@ -19,7 +19,7 @@ CHANGE_COLORS = {"ADDED": "#d4edda", "REMOVED": "#f8d7da", "MODIFIED": "#fff3cd"
 
 
 class RunReport:
-    """Everything produced for one firewall run, shared by PDF / HTML / Excel outputs."""
+    """Data produced for one firewall run, shared by the PDF, HTML and Excel outputs."""
 
     def __init__(self, gateway_name, gateway_type, source, generated_at, rules,
                  fingerprint="", source_fingerprint="", audit=None, changes=None, nat=None,
@@ -95,7 +95,8 @@ _CELL_PADDING = 12  # Default left + right cell padding (points).
 
 def _cell(value, width, style):
     """
-    Plain string when the text fits on one line (fast), wrapping Paragraph otherwise:
+    Return a plain string when the text fits on one line, a wrapping Paragraph otherwise.
+
     Paragraph layout dominates the rendering time of large tables.
     """
     from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -107,7 +108,7 @@ def _cell(value, width, style):
 
 
 def _table(header, rows, col_widths, row_colors=None):
-    """Build a zebra-free table with wrapped cells and optional per-row background colors."""
+    """Build a table with wrapped cells and optional per-row background colors."""
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
@@ -133,8 +134,10 @@ TABLE_CHUNK = 60
 
 def _tables(header, rows, col_widths, row_colors=None):
     """
-    Large tables as several tables of TABLE_CHUNK rows (header repeated): ReportLab re-wraps the
-    whole remaining table at every page split, which is quadratic for one big table.
+    Split a large table into several tables of TABLE_CHUNK rows, each repeating the header.
+
+    ReportLab re-wraps the whole remaining table at every page split, which is quadratic
+    for one big table.
     """
     rows = list(rows)
     colors_list = list(row_colors or [None] * len(rows))
@@ -234,6 +237,7 @@ def _section_pdf(path, title, fieldnames, rows, widths, color_field=None, colors
 
 
 def write_changes_pdf(report, path):
+    """Write the changes section; return None on the first run (no previous snapshot)."""
     if report.changes is None:
         return None
     return _section_pdf(path, "Changes since previous run", CHANGES_FIELDNAMES, report.changes,
@@ -350,7 +354,7 @@ def write_compare_pdf(path, name_a, name_b, differences, meta):
 # ---------------------------------------------------------------------------
 
 def png_to_pdf(png_path, pdf_path):
-    """Raster fallback: put a PNG on an A4 page (scaled to fit)."""
+    """Raster fallback: place a PNG on an A4 page, scaled to fit."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
@@ -369,12 +373,10 @@ def png_to_pdf(png_path, pdf_path):
 
 def assemble_pdf(output_path, parts, title):
     """
-    Merge PDF parts into one file with one bookmark per part.
+    Merge PDF parts into output_path with one bookmark per part.
 
-    Args:
-        output_path: Destination PDF.
-        parts: List of (bookmark title, pdf path); None paths are skipped.
-        title: Document title (metadata).
+    parts is a list of (bookmark title, pdf path); missing or None paths are skipped.
+    Return None if no page was written.
     """
     from pypdf import PdfReader, PdfWriter
 

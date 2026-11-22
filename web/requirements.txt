@@ -16,3 +16,8 @@ flask>=2.2
 cryptography>=41
 waitress>=2.1
 markdown>=3.4
+
+# Optional: OpenID Connect sign-in (PYFRC2G_OIDC_* variables)
+flask-oidc>=2.2
+Flask-Session>=0.8
+redis>=5

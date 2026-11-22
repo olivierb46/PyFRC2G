@@ -94,7 +94,7 @@ def compare_nat(nat_a, nat_b):
 
 
 def write_comparison(output_dir, name_a, name_b, differences, meta):
-    """Write CSV, HTML and PDF comparison reports. Returns the list of written files."""
+    """Write the CSV, HTML and PDF comparison reports and return the written file paths."""
     from pyfrc2g.outputs.csv_files import write_csv
     from pyfrc2g.outputs.html_report import write_compare_html
     from pyfrc2g.outputs.pdf import write_compare_pdf

@@ -3,8 +3,9 @@ CISO Assistant integration: send the PDF report of an analysis as a new revision
 evidence (same API as the engine: POST /api/evidence-revisions/).
 
 Settings (encrypted in the database, Administration > CISO Assistant): URL, API token, folder
-id (default; a firewall can have its own), default evidence id, TLS verification / internal CA, automatic upload after each new
-analysis. A firewall can have its own evidence id (firewall page > Reports & files).
+id (default; a firewall can have its own), default evidence id, TLS verification / internal CA,
+automatic upload after each new analysis. A firewall can also have its own evidence id (firewall
+page > Reports & files).
 """
 
 import logging
@@ -18,18 +19,18 @@ TIMEOUT = 60
 
 
 def configured(settings):
-    """True when the integration is enabled and every required setting is filled."""
+    """Return True when the integration is enabled and every required setting is filled."""
     return bool(settings.get("ciso_enabled") and settings.get("ciso_url") and settings.get("ciso_token")
                 and settings.get("ciso_folder_id"))
 
 
 def evidence_for(settings, gateway):
-    """Evidence id of a firewall: its own one, else the default one ('' if none)."""
+    """Return the evidence id of a firewall: its own, else the default ('' if none)."""
     return ((gateway or {}).get("ciso_evidence_id") or settings.get("ciso_evidence_id") or "").strip()
 
 
 def options_of(db, gateway):
-    """Options (fwopts) of the source of a gateway: its API firewall, its file settings, or defaults."""
+    """Return the fwopts options of a gateway's source: its API firewall, its file settings, or defaults."""
     from pyfrc2g_web import fwopts
 
     firewall = db.firewall(gateway["firewall_id"]) if gateway and gateway.get("firewall_id") else None
@@ -39,30 +40,28 @@ def options_of(db, gateway):
 
 
 def folder_for(settings, gateway, site=""):
-    """
-    Folder (domain) id of a firewall: its own one, else the one of its site
-    (Administration > CISO Assistant), else the default one.
-    """
+    """Return the folder (domain) id of a firewall: its own, else its site's, else the default."""
     own = ((gateway or {}).get("ciso_folder_id") or "").strip()
     by_site = (settings.get("ciso_site_folders") or {}).get(site or "", "")
     return own or by_site or (settings.get("ciso_folder_id") or "").strip()
 
 
 def folder_origin(settings, gateway, site=""):
-    """'own', 'site' or 'default': where the folder of a firewall comes from."""
+    """Return 'own', 'site' or 'default': where the folder of a firewall comes from."""
     if ((gateway or {}).get("ciso_folder_id") or "").strip():
         return "own"
     return "site" if (settings.get("ciso_site_folders") or {}).get(site or "") else "default"
 
 
 def changes_evidence_for(settings, opts):
-    """Evidence of the change report ('' = not sent)."""
+    """Return the evidence id for the change report ('' when the report is not sent)."""
     if not settings.get("ciso_changes"):
         return ""
     return (opts.get("ciso_changes_evidence_id") or settings.get("ciso_changes_evidence_id") or "").strip()
 
 
 def observation(settings, gateway_name, analysis):
+    """Render the revision note from the template; an invalid template is returned unformatted."""
     template = (settings.get("ciso_observation") or DEFAULT_OBSERVATION).strip()
     risk = (analysis.get("data") or {}).get("risk") or {}
     values = {"gateway": gateway_name, "date": analysis.get("created", ""),
@@ -75,7 +74,7 @@ def observation(settings, gateway_name, analysis):
 
 
 class _Verify:
-    """requests 'verify' value; an internal CA is written to a temporary file for the request."""
+    """Context manager giving the requests 'verify' value; an internal CA is written to a temporary file."""
 
     def __init__(self, settings, tmp_dir):
         self.settings = settings
@@ -112,6 +111,7 @@ def _headers(settings):
 
 
 def _explain(error):
+    """Turn a requests error into a short message with a hint for the administrator."""
     import requests
 
     if isinstance(error, requests.exceptions.HTTPError) and error.response is not None:
@@ -130,7 +130,7 @@ def _explain(error):
 
 
 def upload(settings, evidence_id, filename, content, note, tmp_dir, folder_id=None, content_type="application/pdf"):
-    """Send a PDF as a new evidence revision. Returns (ok, message)."""
+    """Send a file as a new evidence revision (PDF by default). Return (ok, message)."""
     import requests
 
     if not configured(settings):
@@ -161,7 +161,7 @@ def upload(settings, evidence_id, filename, content, note, tmp_dir, folder_id=No
 
 
 def test_connection(settings, tmp_dir):
-    """Check the URL, token, folder and default evidence. Returns (ok, message)."""
+    """Check the URL, token, folder and default evidence. Return (ok, message)."""
     import requests
 
     if not configured(settings):
@@ -188,7 +188,7 @@ def test_connection(settings, tmp_dir):
 def send_analysis(db, settings, analysis_id, tmp_dir, username="-"):
     """
     Upload the PDF report of a stored analysis (and its change report when enabled) and record
-    the results. Returns (ok, message).
+    the results in the database and the event log. Return (ok, message).
     """
     analysis = db.analysis(analysis_id)
     if analysis is None:

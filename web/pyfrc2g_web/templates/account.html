@@ -2,13 +2,13 @@
 {% from "macros.html" import csrf %}
 {% block title %}My account{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>My account</h1><div class="sub">{{ g.user.username }} · {{ g.user.role }} · last sign-in {{ g.user.last_login or "—" }}</div></div></div>
-<form class="card" method="post">{{ csrf() }}
+<div class="page-head"><div><h1>My account</h1><div class="sub">{{ g.user.username }} · {{ g.user.role }} · {{ scope_text }} · last sign-in {{ g.user.last_login or "—" }}</div></div></div>
+{% if sso %}<div class="card"><h2>Password</h2><p>This account is managed by your identity provider (SSO): there is no local password.</p></div>{% else %}<form class="card" method="post">{{ csrf() }}
   <h2>Change my password</h2>
   <label for="current">Current password</label><input type="password" id="current" name="current" autocomplete="current-password" required>
   <label for="new">New password</label><input type="password" id="new" name="new" autocomplete="new-password" minlength="10" required>
   <div class="help">At least 10 characters. Your other sessions will be signed out.</div>
   <label for="confirm">Confirm</label><input type="password" id="confirm" name="confirm" autocomplete="new-password" required>
   <div class="form-actions"><button class="btn">Change password</button></div>
-</form>
+</form>{% endif %}
 {% endblock %}

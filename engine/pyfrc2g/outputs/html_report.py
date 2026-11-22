@@ -1,13 +1,13 @@
 """
-Self-contained HTML reports (no external resource): run report with filterable tables, and
-comparison report. Light / dark theme follows the browser.
+Self-contained HTML reports (no external resource): the run report with filterable tables
+and the comparison report. The light or dark theme follows the browser.
 """
 
 import html
 
 from pyfrc2g.analysis.audit import AUDIT_FIELDNAMES, SEVERITIES, count_by_severity
-from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.changes import CHANGES_FIELDNAMES, count_changes
+from pyfrc2g.analysis.exceptions import ACCEPTED_FIELDNAMES
 from pyfrc2g.analysis.hits import HITS_FIELDNAMES
 from pyfrc2g.model.nat import NAT_FIELDNAMES
 from pyfrc2g.model.rules import interface_stats
@@ -149,7 +149,7 @@ def _risk_html(risk):
 
 
 def write_html_report(report, path, rule_fieldnames):
-    """Single self-contained HTML file with summary and filterable tables."""
+    """Write the run report as a single self-contained HTML file and return its path."""
     sev = count_by_severity(report.audit)
     cards = "".join(f"<div class='card'>{s}<b>{sev[s]}</b></div>" for s in SEVERITIES)
     if report.changes is None:
@@ -220,7 +220,7 @@ def write_html_report(report, path, rule_fieldnames):
 
 
 def write_compare_html(path, name_a, name_b, differences, meta):
-    """Self-contained HTML comparison report."""
+    """Write the firewall A vs B comparison report as a self-contained HTML file."""
     from pyfrc2g.analysis.compare import COMPARE_FIELDNAMES
 
     title = f"Comparison {name_a} (A) vs {name_b} (B)"

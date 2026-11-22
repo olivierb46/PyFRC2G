@@ -39,7 +39,7 @@ def _text(value):
 
 
 def register_interfaces(maps, interfaces):
-    """Fill the interface maps from interface dicts (API list or configuration)."""
+    """Fill the interface maps from interface dicts (API list or configuration); return their count."""
     count = 0
     for item in interfaces or []:
         if not isinstance(item, dict) or not item.get("name"):
@@ -57,7 +57,7 @@ def register_interfaces(maps, interfaces):
 
 
 def register_tables(maps, tables):
-    """Aliases of nfSensei ("tables": name, alias_type, entries) in the lookup maps. Returns their number."""
+    """Register nfSensei aliases ("tables": name, alias_type, entries) in the lookup maps; return their count."""
     count = 0
     for table in tables or []:
         if not isinstance(table, dict) or not table.get("name"):
@@ -114,7 +114,7 @@ def _expand(value, variables):
 
 
 def rule_entries(rules, counters=None, variables=None):
-    """Rule entries (model of the pfSense parser) from nfSensei rule dicts, in the given order."""
+    """Convert nfSensei rule dicts to rule entries (same shape as the XML parsers), keeping their order."""
     variables = variables or {}
     entries = []
     for rule in rules or []:
@@ -157,7 +157,7 @@ def rule_entries(rules, counters=None, variables=None):
 
 
 def nat_entries(outbound, port_forwards):
-    """NAT entries from nfSensei NAT dicts (outbound: documented; port forwards: best effort)."""
+    """Convert nfSensei NAT dicts to NAT entries (outbound fields are documented, port forward ones best effort)."""
     entries = []
     for item in outbound or []:
         if not isinstance(item, dict):
@@ -189,7 +189,7 @@ def nat_entries(outbound, port_forwards):
 
 
 def counters_from_stats(data):
-    """{rule name: counters} from GET /firewall/stats. Only rules with counters enabled are kept."""
+    """Return {rule name: counters} from GET /firewall/stats, keeping only rules with counters enabled."""
     counters = {}
     for item in (data or {}).get("rules") or []:
         if not isinstance(item, dict) or not item.get("counted"):
@@ -206,7 +206,8 @@ def counters_from_stats(data):
 # ---------------------------------------------------------------------------
 
 def unwrap_config(document):
-    """The configuration dict of an API answer ({"data": {"config": ...}}), a {"config": ...} or the config."""
+    """Return the configuration dict from an API answer ({"data": {"config": ...}}), a {"config": ...} wrapper
+    or the bare config, else None."""
     for _ in range(3):
         if not isinstance(document, dict):
             break
@@ -217,7 +218,7 @@ def unwrap_config(document):
 
 
 def load_document(path):
-    """JSON or YAML file -> object."""
+    """Load a JSON or YAML file; raise ValueError if it is neither (or PyYAML is missing for YAML)."""
     with open(path, encoding="utf-8") as f:
         text = f.read()
     try:
@@ -238,7 +239,10 @@ CONFIG_NAMES = ("running.yaml", "config.yaml.lkg", "candidate.yaml")
 
 
 def find_config_file(directory):
-    """running.yaml of an extracted nfSensei backup (the folder itself or one level down), else None."""
+    """Return the configuration file of an extracted nfSensei backup (in the folder or one level down), else None.
+
+    Names are tried in CONFIG_NAMES order: running.yaml, config.yaml.lkg, candidate.yaml.
+    """
     for name in CONFIG_NAMES:
         for base in [directory] + sorted(os.path.join(directory, d) for d in os.listdir(directory)
                                          if os.path.isdir(os.path.join(directory, d))):
@@ -249,7 +253,7 @@ def find_config_file(directory):
 
 
 def parse(path):
-    """Configuration file (or extracted backup folder) -> (maps, entries, host name, nat entries)."""
+    """Parse a configuration file (or extracted backup folder) into (maps, entries, host name, nat entries)."""
     if os.path.isdir(path):
         found = find_config_file(path)
         if found is None:
@@ -280,7 +284,7 @@ class NfSenseiClient(APIClient):
     _variables = None
 
     def _data(self, path, operation, timeout=30, log_level=logging.ERROR):
-        """The "data" of an API answer, None on any failure (logged)."""
+        """Return the "data" of an API answer, or None on any failure (logged at log_level)."""
         headers = {"accept": "application/json", "X-API-Key": self.config.api_key}
         response = self._make_api_request(f"{self.config.base_url}{path}", headers=headers, timeout=timeout,
                                           operation=operation, log_level=log_level)
@@ -298,7 +302,7 @@ class NfSenseiClient(APIClient):
         return body.get("data") if isinstance(body, dict) and "data" in body else body
 
     def _config(self):
-        """The configuration analysed (running = applied, candidate = pending), None if unreadable."""
+        """Return the configuration to analyse (running = applied, candidate = pending), cached; {} if unreadable."""
         if self._config_cache is None:
             which = getattr(self.config, "nfsensei_config", "running")
             data = self._data(f"/api/v1/config/{which}", f"fetching the nfSensei {which} configuration",
@@ -369,7 +373,7 @@ class NfSenseiClient(APIClient):
         return counters
 
     def fetch_host_name(self):
-        """Host name of the firewall, None if unavailable."""
+        """Return the firewall host name, or None if unavailable."""
         name = ((self._config().get("system") or {}).get("hostname"))
         if name:
             return name
