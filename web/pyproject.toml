@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyfrc2g-web"
-version = "1.1.0"  # keep in sync with pyfrc2g_web/__init__.py
+version = "1.2.0"  # keep in sync with pyfrc2g_web/__init__.py
 description = "Web application for PyFRC2G: firewall rules dashboard, audit, graphs and reports, encrypted storage"
 readme = "README.md"
 license = { text = "MIT" }

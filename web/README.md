@@ -259,12 +259,9 @@ database, never shown again, and included in the backup and the key rotation. Me
 background (3 attempts) so a collector that is down never slows an analysis; every success or failure is in
 the event log (class of the error only, never the URL).
 
-### Tests
+### Redis session store (optional)
 
-`pip install -e "./web[dev]"` then `pytest web/tests` (roles, scopes, sessions, shared throttle, audit
-export, backup, key rotation, trends, accepted-risk workflow, SSO flow with a fake identity provider).
-
-**Redis session store (optional).** By default sessions are files in `<data dir>/sessions`. For several
+By default sessions are files in `<data dir>/sessions`. For several
 instances, or to keep sessions out of the data volume, use Redis. With Docker, in `.env`:
 
 ```
@@ -274,7 +271,7 @@ PYFRC2G_REDIS_PASSWORD=<openssl rand -base64 36 | tr -d '/+='>
 ```
 
 The `redis` service of `docker-compose.yml` is hardened: internal network without outside route and no
-published port, `default` user disabled, one ACL user limited to `session:*` keys without admin or
+published port, `default` user disabled, one ACL user limited to `session:*` and `throttle:*` keys without admin or
 dangerous commands, nothing persisted to disk, read-only filesystem, no capabilities, memory limit.
 The application refuses a Redis without password, checks it at start-up (fails fast) and never logs the
 URL. For an external Redis use `rediss://` (TLS, certificate verified, `PYFRC2G_REDIS_CA` for a private CA).
@@ -298,6 +295,7 @@ from other machines.
 
 | PyFRC2G-Web (`web/`) | PyFRC2G engine (`engine/`) |
 |----------------------|----------------------------|
+| 1.2.x | 2.3.0 or later |
 | 1.1.x | 2.3.0 or later |
 | 1.0.x | 2.2.0 or later |
 

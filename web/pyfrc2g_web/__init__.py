@@ -15,7 +15,7 @@ import os
 import sys
 from datetime import timedelta
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 MIN_ENGINE_VERSION = (2, 3, 0)
 ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine"
 
