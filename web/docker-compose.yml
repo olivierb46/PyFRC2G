@@ -16,6 +16,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    pids_limit: 256
     networks: [default, sessions]
     depends_on:
       redis:
@@ -25,6 +26,48 @@ services:
       - pyfrc2g-data:/data
       - ./pyfrc2g_web:/app/pyfrc2g-web/pyfrc2g_web:ro,z
       - ../engine/pyfrc2g:/app/pyfrc2g/pyfrc2g:ro,z
+
+  # Optional HTTPS reverse proxy in front of the application (nginx, TLS termination, request limits).
+  # Enable it with, in .env:
+  #   COMPOSE_PROFILES=proxy            (or proxy,redis)
+  #   PYFRC2G_SERVER_NAME=pyfrc2g.example.com
+  #   PYFRC2G_WEB_PROXY=1               (the application trusts one proxy hop)
+  #   PYFRC2G_WEB_SECURE_COOKIES=1
+  # and put the certificate in ./nginx/certs/fullchain.pem and privkey.pem (./nginx/self-signed.sh makes a test one).
+  # Then use https://<name>/ ; the application itself stays reachable on 127.0.0.1:8080 only.
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    profiles: [proxy]
+    restart: unless-stopped
+    ports:
+      - "${PYFRC2G_HTTP_PORT:-80}:8080"
+      - "${PYFRC2G_HTTPS_PORT:-443}:8443"
+    environment:
+      SERVER_NAME: ${PYFRC2G_SERVER_NAME:-localhost}
+      HTTPS_PORT: ${PYFRC2G_HTTPS_PORT:-443}
+      MAX_UPLOAD_MB: ${PYFRC2G_WEB_MAX_UPLOAD_MB:-50}
+      NGINX_ENVSUBST_FILTER: ^(SERVER_NAME|HTTPS_PORT|MAX_UPLOAD_MB)$$
+    depends_on:
+      pyfrc2g-web:
+        condition: service_healthy
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro,z
+      - ./nginx/proxy.inc:/etc/nginx/snippets/proxy.inc:ro,z
+      - ./nginx/certs:/etc/nginx/certs:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/nginx-health | grep -q ok"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:mode=1777  # The configuration rendered from the template.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 100
 
   # Optional session store (OIDC sign-in). Enable it with, in .env:
   #   COMPOSE_PROFILES=redis
