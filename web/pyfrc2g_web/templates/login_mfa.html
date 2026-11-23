@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Second factor{% endblock %}
+{% block public %}
+<div class="login-wrap">
+  <form class="login-card" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#2f6fed"/><path d="M7 10h18M7 16h11M7 22h18" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="23" cy="16" r="2.5" fill="#fff"/></svg>PyFRC2G</div>
+    <p class="muted">Two-factor authentication</p>
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+    <label for="code">Code of your authenticator app</label>
+    <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="20" required autofocus>
+    <div class="help">6 digits, or one of your recovery codes if you lost your phone.</div>
+    <div class="form-actions"><button class="btn">Verify</button> <a class="btn secondary" href="{{ url_for('main.login') }}">Cancel</a></div>
+  </form>
+</div>
+{% endblock %}

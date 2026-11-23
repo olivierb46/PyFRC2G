@@ -175,5 +175,19 @@ def require_gateway(name):
     return gateway
 
 
+def run_visible(db, run, names=None, user=None):
+    """True if the user may see an analysis run: their own, or one whose firewalls are all in their scope.
+
+    A run that also covers firewalls outside the scope is hidden: its log names them (addresses, errors).
+    """
+    user = user or g.user
+    if not is_restricted(user):
+        return True
+    if run.get("user_id") == user["id"]:
+        return True
+    names = visible_names(db, user) if names is None else names
+    return bool(run["gateways"]) and set(run["gateways"]) <= names
+
+
 def visible_names(db, user=None):
     return {gw["name"] for gw in visible_gateways(db, user)}

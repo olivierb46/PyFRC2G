@@ -16,6 +16,7 @@ flask>=2.2
 cryptography>=41
 waitress>=2.1
 markdown>=3.4
+segno>=1.5   # QR code of the two-factor setup (optional: without it the secret is typed by hand)
 
 # Optional: OpenID Connect sign-in (PYFRC2G_OIDC_* variables)
 flask-oidc>=2.2

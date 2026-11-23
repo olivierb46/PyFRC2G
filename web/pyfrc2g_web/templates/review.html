@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge %}
+{% block title %}Rule review · {{ gw.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Rule review · <a class="plain" href="{{ url_for('main.gateway', name=gw.name) }}">{{ gw.name }}</a></h1>
+<div class="sub">Owner, ticket and review date of each rule.
+{% if months %}A rule not reviewed for {{ months }} month(s) is overdue.{% else %}Periodic review is off (review period 0).{% endif %}</div></div></div>
+
+<div class="card">
+  <div class="filters-bar">
+    <span>{{ counts.never }} never reviewed · {{ counts.overdue }} overdue · {{ counts.ok }} up to date · {{ total }} rules</span>
+    {% for key, label in (("", "All"), ("never", "Never reviewed"), ("overdue", "Overdue"), ("ok", "Up to date")) %}
+    <a class="btn small {{ '' if status == key else 'secondary' }}" href="{{ url_for('main.review_rules', name=gw.name, status=key) }}">{{ label }}</a>{% endfor %}
+  </div>
+  {% if can('manage') %}<form method="post" class="inline-row mt">{{ csrf() }}<input type="hidden" name="action" value="months">
+    <label for="review_months">Review period (months, 0 = off)</label>
+    <input type="number" class="w-xs" id="review_months" name="review_months" min="0" max="120" value="{{ months }}"><button class="btn small">Save</button></form>{% endif %}
+</div>
+
+{% if items %}
+<form method="post" class="section">{{ csrf() }}
+<div class="table-wrap"><table id="review-table"><thead><tr><th>{% if can('analyse') %}<input type="checkbox" data-check-all="review-table" aria-label="Select all">{% endif %}</th>
+<th>#</th><th>Interface</th><th>Action</th><th>Source</th><th>Destination</th><th>Port</th><th>Comment</th><th>Owner</th><th>Ticket</th><th>Reviewed</th><th>Status</th></tr></thead><tbody>
+{% for i in items %}{% set r = i.rule %}<tr>
+<td>{% if can('analyse') %}<input type="checkbox" name="keys" value="{{ i.key }}" aria-label="Select rule {{ r['RULE ORDER'] }}">{% endif %}</td>
+<td class="nowrap">{{ r["RULE ORDER"] }}</td><td>{{ r.GATEWAY.split("/")[-1] }}</td><td>{{ badge(r.ACTION|upper, r.ACTION) }}</td>
+<td class="small">{{ r.SOURCE }}</td><td class="small">{{ r.DESTINATION }}</td><td class="small">{{ r.PROTOCOL }} {{ r.PORT }}</td>
+<td class="small">{{ r.COMMENT }}{% if i.note.comment %}<div class="muted">{{ i.note.comment }}</div>{% endif %}</td>
+<td>{{ i.note.owner or "—" }}</td><td>{{ i.note.ticket or "—" }}</td>
+<td class="nowrap muted">{{ i.note.reviewed or "never" }}{% if i.note.reviewer %}<div class="small">{{ i.note.reviewer }}</div>{% endif %}</td>
+<td>{{ badge(i.status, {"never": "MEDIUM", "overdue": "HIGH", "ok": "ok"}.get(i.status, "")) }}</td></tr>{% endfor %}</tbody></table></div>
+{% if can('analyse') %}
+<div class="card section"><h2>Selected rules</h2>
+  <div class="grid cols-3">
+    <div><label for="owner">Owner</label><input type="text" id="owner" name="owner" maxlength="64"></div>
+    <div><label for="ticket">Ticket</label><input type="text" id="ticket" name="ticket" maxlength="64"></div>
+    <div><label for="comment">Comment</label><input type="text" id="comment" name="comment" maxlength="500"></div>
+  </div>
+  <div class="help">Empty fields leave the existing values unchanged; tick a box to empty the value.
+    <label class="check"><input type="checkbox" name="clear_owner" value="1"> clear the owner</label>
+    <label class="check"><input type="checkbox" name="clear_ticket" value="1"> clear the ticket</label>
+    <label class="check"><input type="checkbox" name="clear_comment" value="1"> clear the comment</label></div>
+  <div class="form-actions"><button class="btn secondary" name="action" value="save">Save the notes</button>
+    <button class="btn" name="action" value="review">Mark as reviewed today</button></div>
+</div>{% endif %}
+</form>
+{% else %}<div class="card empty section">{{ "No rule to show." if total else "No analysis stored for this firewall yet." }}</div>{% endif %}
+{% endblock %}

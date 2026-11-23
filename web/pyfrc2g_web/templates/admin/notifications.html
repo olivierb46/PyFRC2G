@@ -13,12 +13,17 @@
   {% else %}
   <p class="muted">No mail server: set <code>PYFRC2G_SMTP_HOST</code>, <code>PYFRC2G_SMTP_FROM</code> (and optionally <code>_PORT</code>, <code>_SECURITY</code>, <code>_USER</code>, <code>_PASSWORD</code>) and restart. Webhook, Slack and Teams channels work without it.</p>
   {% endif %}
-  <form method="post" class="inline-row">{{ csrf() }}<input type="hidden" name="action" value="drift">
-    <label for="notify_drift">Risk drift threshold (points)</label>
+</div>
+<div class="card section">
+  <h2>Alert thresholds</h2>
+  <form method="post" class="inline-row">{{ csrf() }}<input type="hidden" name="action" value="thresholds">
+    <label for="notify_drift">Risk rise (points)</label>
     <input type="number" class="w-xs" id="notify_drift" name="notify_drift" min="0" max="100" value="{{ drift }}">
-    <button class="btn">Save</button>
+    <label for="notify_stale_hours">Analysis too old (hours)</label>
+    <input type="number" class="w-xs" id="notify_stale_hours" name="notify_stale_hours" min="0" max="8760" value="{{ stale }}">
+    <button class="btn small">Save</button>
   </form>
-  <div class="help">An analysis whose score rises by at least this much raises the <i>Risk score rise</i> event. 0 = never.</div>
+  <div class="help">A new analysis whose score rises by at least that many points raises <i>Risk score rise</i>; an API firewall not analysed for that many hours raises <i>Analysis too old</i>, once. 0 = never.</div>
 </div>
 
 <div class="card section">
@@ -61,9 +66,9 @@
 <div class="card section">
   <h2>Scheduled reports</h2>
   {% if schedules %}
-  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Format</th><th>When</th><th>Filter</th><th>Recipients</th><th>Last sent</th><th></th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Format</th><th>Schedule</th><th>Next run</th><th>Filter</th><th>Recipients</th><th>Last sent</th><th></th></tr></thead><tbody>
   {% for s in schedules %}<tr{% if not s.enabled %} class="muted"{% endif %}>
-    <td><b>{{ s.name }}</b>{% if not s.enabled %} <span class="badge">off</span>{% endif %}</td><td>{{ s.format|upper }}</td><td class="small">{{ s.when }}</td>
+    <td><b>{{ s.name }}</b>{% if not s.enabled %} <span class="badge">off</span>{% endif %}</td><td>{{ s.format|upper }}</td><td class="mono">{{ s.cron or "-" }}</td><td class="small nowrap">{{ s.next }}</td>
     <td class="small">{{ ("site " ~ s.site) if s.site }}{{ " " if s.site and s.tag }}{{ ("tag " ~ s.tag) if s.tag }}{{ "all" if not s.site and not s.tag }}</td>
     <td class="small">{{ s.recipients|join(", ") }}</td><td class="nowrap muted">{{ s.last_sent }}</td>
     <td class="nowrap">
@@ -77,14 +82,15 @@
   <form method="post">{{ csrf() }}<input type="hidden" name="action" value="add_schedule">
     <div class="grid cols-3">
       <div><label for="s_name">Name</label><input type="text" id="s_name" name="name" required maxlength="60"></div>
-      <div><label for="s_format">Format</label><select id="s_format" name="format"><option value="pdf">PDF summary</option><option value="xlsx">Excel workbook</option></select></div>
-      <div><label for="s_frequency">Frequency</label><select id="s_frequency" name="frequency">{% for value, label in frequencies %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
-      <div><label for="s_weekday">Weekday <span class="muted">(weekly)</span></label><select id="s_weekday" name="weekday">{% for d in ("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday") %}<option value="{{ loop.index0 }}">{{ d }}</option>{% endfor %}</select></div>
-      <div><label for="s_monthday">Day of the month <span class="muted">(monthly, 1-28)</span></label><input type="number" id="s_monthday" name="monthday" min="1" max="28" value="1"></div>
-      <div><label for="s_hour">Hour <span class="muted">(server time, 0-23)</span></label><input type="number" id="s_hour" name="hour" min="0" max="23" value="7"></div>
+      <div><label for="s_format">Format</label><select id="s_format" name="format"><option value="pdf">PDF summary</option><option value="xlsx">Excel workbook</option><option value="digest">Weekly summary (text in the email)</option></select></div>
+      <div><label for="s_cron">Schedule <span class="muted">(cron)</span></label><input type="text" id="s_cron" name="cron" class="mono" list="cron-examples" value="0 7 * * 1" required maxlength="100" autocomplete="off" spellcheck="false"></div>
       <div><label for="s_site">Site <span class="muted">(optional)</span></label><input type="text" id="s_site" name="site" maxlength="64"></div>
       <div><label for="s_tag">Tag <span class="muted">(optional)</span></label><input type="text" id="s_tag" name="tag" maxlength="64"></div>
     </div>
+    <datalist id="cron-examples">{% for expr, label in cron_examples %}<option value="{{ expr }}" label="{{ label }}"></option>{% endfor %}</datalist>
+    <div class="help">Five fields, as in crontab: <code>minute hour day-of-month month day-of-week</code> (server time; weekday 0 or 7 = Sunday, names such as <code>mon</code> or <code>jan</code> work).
+      Lists <code>1,15</code>, ranges <code>1-5</code> and steps <code>*/2</code> are accepted, and so are <code>@daily</code>, <code>@weekly</code> and <code>@monthly</code>.
+      Examples: <code>0 7 * * *</code> every day at 07:00, <code>0 7 * * 1-5</code> weekdays, <code>0 8 1 * *</code> the 1st of each month. At most one report per hour.</div>
     <label for="s_rcpt">Recipients</label><input type="text" id="s_rcpt" name="recipients" required placeholder="ciso@example.org, soc@example.org"{% if not cfg.smtp %} disabled{% endif %}>
     {% if not cfg.smtp %}<div class="help">A mail server is required (see above).</div>{% endif %}
     <div class="form-actions"><button class="btn"{% if not cfg.smtp %} disabled{% endif %}>Add the schedule</button></div>

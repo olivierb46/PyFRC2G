@@ -8,9 +8,9 @@
 {% if sessions %}
 <div class="table-wrap"><table><thead><tr><th>User</th><th>Address</th><th>Browser</th><th>Signed in</th><th>Last activity</th><th></th></tr></thead><tbody>
 {% for s in sessions %}<tr>
-<td><b>{{ s.username or "?" }}</b>{% if s.token == current %} <span class="badge info">this session</span>{% endif %}</td>
+<td><b>{{ s.username or "?" }}</b>{% if s.ref == current %} <span class="badge info">this session</span>{% endif %}</td>
 <td class="mono">{{ s.address }}</td><td class="small muted">{{ s.agent[:80] }}</td><td class="nowrap muted">{{ s.created }}</td><td class="nowrap muted">{{ s.last_seen }}</td>
-<td class="nowrap">{% if s.token != current %}<form class="inline" method="post" data-confirm="Revoke this session?">{{ csrf() }}<input type="hidden" name="token" value="{{ s.token }}"><button class="btn small danger">Revoke</button></form>{% endif %}
+<td class="nowrap">{% if s.ref != current %}<form class="inline" method="post" data-confirm="Revoke this session?">{{ csrf() }}<input type="hidden" name="ref" value="{{ s.ref }}"><button class="btn small danger">Revoke</button></form>{% endif %}
 <form class="inline" method="post" data-confirm="Revoke every other session of {{ s.username }}?">{{ csrf() }}<input type="hidden" name="user_id" value="{{ s.user_id }}"><button class="btn small secondary">Revoke all of the user</button></form></td>
 </tr>{% endfor %}</tbody></table></div>
 {% else %}<div class="card empty">No session.</div>{% endif %}

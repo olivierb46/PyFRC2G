@@ -17,7 +17,7 @@ Convert firewall rules into graphical flow diagrams, audit and compliance report
 | Folder | Package | What it is |
 |--------|---------|------------|
 | [`engine/`](engine/) | `pyfrc2g` | The engine and the command line tool: parsers, audit, change report, compliance policy, risk score, zone matrix, graphs, PDF / HTML / Excel / CSV reports, CISO Assistant upload. **Everything you need without a web interface.** |
-| [`web/`](web/) | `pyfrc2g-web` | The web application (Flask): dashboard, charts and graphs per firewall, API firewalls configuration, uploads, four roles with per-firewall scopes, optional OpenID Connect sign-in, accepted-risk approval, trends, alerts and scheduled reports by email, SIEM export, encrypted backups, data encrypted in SQLite. Uses the engine. |
+| [`web/`](web/) | `pyfrc2g-web` | The web application (Flask): dashboard, charts and graphs per firewall, API firewalls configuration, uploads, four roles with per-firewall scopes, optional OpenID Connect sign-in, accepted-risk approval, trends, rule review, cleanup plan, flow search, compliance mapping, REST API and Prometheus metrics, alerts and scheduled reports by email, SIEM export, encrypted backups, data encrypted in SQLite. Uses the engine. |
 
 Full documentation: [`engine/README.md`](engine/README.md) and [`web/README.md`](web/README.md).
 How the analysis works and how to read the results (risk score, findings, accepted risks, reports, CISO Assistant), [`HOW_IT_WORKS.md`](HOW_IT_WORKS.md) (also shown in the web application, page *How it works*).

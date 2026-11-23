@@ -16,7 +16,7 @@
     <label for="ciso_token">API token</label>
     <input type="password" id="ciso_token" name="ciso_token" autocomplete="new-password" placeholder="{{ '•••••••• (stored, leave empty to keep)' if c.has_token else 'Personal access token' }}">
     <div class="help">CISO Assistant: Settings &gt; Personal access tokens. Stored encrypted, never displayed again.</div>
-    <label class="check mt"><input type="checkbox" name="ciso_verify_ssl" value="1" {{ 'checked' if c.verify_ssl }}> Verify the TLS certificate of CISO Assistant</label>
+    <label class="check mt"><input type="checkbox" class="toggle" name="ciso_verify_ssl" value="1" {{ 'checked' if c.verify_ssl }}> Verify the TLS certificate of CISO Assistant</label>
     <label for="ciso_ca_pem">Internal CA certificate (PEM) <span class="muted">(optional)</span></label>
     <textarea id="ciso_ca_pem" name="ciso_ca_pem" placeholder="{{ 'A CA certificate is stored. Paste a new one to replace it.' if c.has_ca else '-----BEGIN CERTIFICATE-----' }}"></textarea>
     {% if c.has_ca %}<label class="check"><input type="checkbox" name="ciso_ca_clear" value="1"> Remove the stored CA certificate</label>{% endif %}

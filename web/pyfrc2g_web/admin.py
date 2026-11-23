@@ -5,10 +5,12 @@ route's permission). Secrets are never sent back to the browser: an empty secret
 the stored value.
 """
 
+import functools
 import json
 import os
 import re
 import sqlite3
+import time
 
 from flask import (
     Blueprint,
@@ -22,7 +24,7 @@ from flask import (
     url_for,
 )
 
-from pyfrc2g_web import access, security
+from pyfrc2g_web import access, csvsafe, security
 from pyfrc2g_web.fwopts import ports
 from pyfrc2g_web.security import admin_required, permission_required
 
@@ -130,6 +132,8 @@ def firewall(firewall_id=None):
             if gateway:  # The evidence / folder ids of the firewall are also the ones of its analyses.
                 db().set_gateway_evidence(gateway["id"], config["ciso_evidence_id"], config["ciso_folder_id"])
             db().add_event(g.user["username"], "firewall updated" if firewall_id else "firewall added", name)
+            if not config.get("verify_ssl") and not config.get("ca_pem"):
+                db().add_event(g.user["username"], "tls verification off", name)
             if request.form.get("analyse") == "1" and enabled:
                 flash(f"Firewall {name} saved (credentials encrypted).", "ok")
                 run_id = current_app.runner.submit("manual", f"API analysis of {name}",
@@ -213,7 +217,14 @@ def settings():
             "sensitive_ports": ports(form.get("sensitive_ports", ""), "Sensitive ports", errors),
             "verify_ssl": form.get("verify_ssl") == "1", "policy": policy,
             "automatic_rules": form.get("automatic_rules") == "1",
+            "change_windows": form.get("change_windows", "").strip()[:1000],
         }
+        try:
+            from pyfrc2g_web import windows
+
+            windows.parse(new["change_windows"])
+        except ValueError as e:
+            errors.append(f"Maintenance windows: {e}")
         if errors:
             for error in errors:
                 flash(error, "error")
@@ -351,7 +362,7 @@ def users():
             except access.ScopeError as e:
                 flash(str(e), "error")
                 return redirect(url_for("admin.users"))
-            user_id = db().create_user(username, security.hash_password(password), role)
+            user_id = db().create_user(username, security.hash_password(password), role, must_change=True)
             db().update_user(user_id, scope=scope)
             db().add_event(g.user["username"], "user created", f"{username} ({role}; {access.describe(scope)})")
             flash(f"User {username} created.", "ok")
@@ -416,6 +427,11 @@ def update_user(user_id):
             db().update_user(user_id, scope=scope)
             db().add_event(g.user["username"], "scope changed", f"{user['username']}: {access.describe(scope)}")
             flash(f"Scope of {user['username']}: {access.describe(scope)}.", "ok")
+    elif action == "mfa_reset":
+        db().disable_totp(user_id)
+        db().delete_user_api_tokens(user_id)  # Whoever lost the device may have lost more: tokens are renewed.
+        db().add_event(g.user["username"], "mfa reset", user["username"])
+        flash(f"Two-factor authentication of {user['username']} turned off: they can enrol again.", "ok")
     elif action == "password":
         password = request.form.get("password", "")
         problem = security.password_problem(password)
@@ -424,21 +440,35 @@ def update_user(user_id):
         elif problem:
             flash(problem, "error")
         else:
-            db().update_user(user_id, password_hash=security.hash_password(password))
+            db().update_user(user_id, password_hash=security.hash_password(password), must_change=True)
+            db().delete_user_api_tokens(user_id)
             db().add_event(g.user["username"], "password reset", user["username"])
-            flash(f"Password of {user['username']} changed (their sessions are signed out).", "ok")
+            flash(f"Password of {user['username']} changed: their sessions are signed out and they must choose "
+                  "another password at the next sign-in.", "ok")
     return redirect(url_for("admin.users"))
 
 
+def audit_required(view):
+    """Like permission_required("audit"), and not for a user limited to some firewalls: the log is global."""
+    guarded = permission_required("audit")
+
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if access.is_restricted():
+            abort(403)
+        return view(*args, **kwargs)
+    return guarded(wrapped)
+
+
 @bp.route("/events")
-@permission_required("audit")
+@audit_required
 def events():
     """Show the event log."""
     return render_template("admin/events.html", events=db().events(), export=current_app.db.on_event is not None)
 
 
 @bp.route("/events.<fmt>")
-@permission_required("audit")
+@audit_required
 def events_export(fmt):
     """Download of the event log (JSON lines or CSV), for archiving or a SIEM that pulls files."""
     import csv
@@ -459,9 +489,7 @@ def events_export(fmt):
         writer = csv.writer(out)
         writer.writerow(fields)
         for r in rows:
-            # Prevent spreadsheet formula injection: prefix cells starting with = + - @ with a quote.
-            writer.writerow(["'" + str(r[k]) if str(r[k]).startswith(("=", "+", "-", "@")) else r[k]
-                             for k in fields])
+            writer.writerow([csvsafe.cell(r[k]) for k in fields])  # Spreadsheet formulas are neutralised.
         body, mime = out.getvalue(), "text/csv"
     db().add_event(g.user["username"], "event log exported", fmt)
     response = Response(body, mimetype=mime)
@@ -477,12 +505,13 @@ def events_export(fmt):
 @bp.route("/sessions", methods=["GET", "POST"])
 @admin_required
 def sessions():
-    """List active sessions and revoke one (token) or all of a user (user_id)."""
+    """List active sessions and revoke one (opaque ref) or all of a user (user_id)."""
     if request.method == "POST":
-        token, user_id = request.form.get("token"), request.form.get("user_id", type=int)
-        if token:
-            target = next((s for s in db().sessions() if s["token"] == token), None)
-            if target and db().delete_sessions(token=token):
+        ref, user_id = request.form.get("ref"), request.form.get("user_id", type=int)
+        if ref:
+            target = next((s for s in db().sessions() if s["ref"] == ref), None)
+            token = db().token_of_ref(ref) if target else None
+            if token and token != g.session_token and db().delete_sessions(token=token):
                 db().add_event(g.user["username"], "session revoked", f"{target['username']} from {target['address']}")
                 flash(f"Session of {target['username']} revoked.", "ok")
         elif user_id is not None:
@@ -492,7 +521,8 @@ def sessions():
                 db().add_event(g.user["username"], "sessions revoked", f"{user['username']}: {count}")
                 flash(f"{count} session(s) of {user['username']} revoked.", "ok")
         return redirect(url_for("admin.sessions"))
-    return render_template("admin/sessions.html", sessions=db().sessions(), current=g.session_token,
+    return render_template("admin/sessions.html", sessions=db().sessions(),
+                           current=db().session_ref(g.session_token),
                            limit=current_app.config.get("MAX_SESSIONS", 0))
 
 
@@ -543,18 +573,14 @@ def _add_schedule(notifier, form):
         raise notify.NotifyError("Name: 1 to 60 letters, digits, spaces, '.', ':' or '-'.")
     if notifier.cfg["smtp"] is None:
         raise notify.NotifyError("No mail server configured (PYFRC2G_SMTP_HOST).")
-    fmt, frequency = form.get("format", ""), form.get("frequency", "")
-    if fmt not in ("pdf", "xlsx") or frequency not in dict(notify.FREQUENCIES):
-        raise notify.NotifyError("Choose a format and a frequency.")
-    weekday, monthday, hour = (form.get("weekday", type=int, default=0), form.get("monthday", type=int, default=1),
-                               form.get("hour", type=int, default=7))
-    if not (0 <= weekday <= 6 and 1 <= monthday <= 28 and 0 <= hour <= 23):
-        raise notify.NotifyError("Invalid day or hour (day of the month: 1 to 28).")
+    fmt = form.get("format", "")
+    if fmt not in ("pdf", "xlsx", "digest"):
+        raise notify.NotifyError("Choose a format.")
+    cron = notify.check_cron(form.get("cron"))
     site, tag = notify.clean(form.get("site"), 64), notify.clean(form.get("tag"), 64)
     recipients = notify.parse_recipients(form.get("recipients"), notifier.cfg)
     try:
-        return db().add_schedule(name, fmt, frequency, weekday, monthday, hour, recipients, site, tag,
-                                 g.user["username"]), name
+        return db().add_schedule(name, fmt, cron, recipients, site, tag, g.user["username"]), name
     except sqlite3.IntegrityError as e:
         raise notify.NotifyError("A schedule has this name.") from e
 
@@ -577,13 +603,16 @@ def notifications():
                 _, name, kind = _add_channel(notifier, form)
                 db().add_event(user, "notification channel added", f"{name} ({kind})")
                 flash(f"Channel {name} added. Use Test to check it.", "ok")
-            elif action == "drift":
-                value = form.get("notify_drift", type=int, default=10)
-                if not 0 <= value <= 100:
-                    raise notify.NotifyError("Threshold between 0 (never) and 100 points.")
-                db().save_settings({"notify_drift": value})
-                db().add_event(user, "notification threshold changed", f"{value} points")
-                flash("Threshold saved.", "ok")
+            elif action == "thresholds":
+                drift = form.get("notify_drift", type=int, default=10)
+                stale = form.get("notify_stale_hours", type=int, default=48)
+                if not 0 <= drift <= 100:
+                    raise notify.NotifyError("Risk rise: between 0 (never) and 100 points.")
+                if not 0 <= stale <= 8760:
+                    raise notify.NotifyError("Analysis too old: between 0 (never) and 8760 hours.")
+                db().save_settings({"notify_drift": drift, "notify_stale_hours": stale})
+                db().add_event(user, "notification thresholds changed", f"rise {drift} points, stale {stale} h")
+                flash("Thresholds saved.", "ok")
             elif action == "add_schedule":
                 _, name = _add_schedule(notifier, form)
                 db().add_event(user, "report schedule added", name)
@@ -617,11 +646,29 @@ def notifications():
         channel["shown"] = notify.describe_target(channel)
     schedules = db().schedules()
     for schedule in schedules:
-        schedule["when"] = notify.describe_schedule(schedule)
+        schedule["next"] = notify.describe_schedule(schedule)
     return render_template("admin/notifications.html", channels=channels, schedules=schedules, cfg=notifier.cfg,
                            kinds=notify.KINDS, events=notify.EVENTS,
-                           event_labels=dict(notify.EVENTS), frequencies=notify.FREQUENCIES,
-                           drift=db().settings().get("notify_drift"))
+                           event_labels=dict(notify.EVENTS), cron_examples=notify.CRON_EXAMPLES,
+                           drift=db().settings().get("notify_drift"), stale=db().settings().get("notify_stale_hours"))
+
+
+# ---------------------------------------------------------------------------
+# API tokens
+# ---------------------------------------------------------------------------
+
+@bp.route("/tokens", methods=["GET", "POST"])
+@admin_required
+def tokens():
+    """List the API tokens of every user and revoke them."""
+    if request.method == "POST":
+        token_id = request.form.get("token_id", type=int)
+        found = next((t for t in db().api_tokens() if t["id"] == token_id), None)
+        if found and db().delete_api_token(token_id):
+            db().add_event(g.user["username"], "api token revoked", f"{found['name']} of {found['username']}")
+            flash(f"Token {found['name']} of {found['username']} revoked.", "ok")
+        return redirect(url_for("admin.tokens"))
+    return render_template("admin/tokens.html", tokens=db().api_tokens())
 
 
 # ---------------------------------------------------------------------------
@@ -637,7 +684,10 @@ def backup():
     action = request.form.get("action") if request.method == "POST" else None
     if action == "download":
         passphrase = request.form.get("passphrase", "")
-        if passphrase != request.form.get("confirm", ""):
+        if not _reauthenticated():
+            flash("Re-authentication failed: password or code is wrong." if not _is_sso()
+                  else "Sign out and sign in again, then download the backup within 15 minutes.", "error")
+        elif passphrase != request.form.get("confirm", ""):
             flash("The passphrases do not match.", "error")
         else:
             try:
@@ -656,9 +706,44 @@ def backup():
             flash(f"{count} value(s) re-encrypted with the current key. You can now remove "
                   "PYFRC2G_SECRET_KEY_OLD and restart.", "ok")
         return redirect(url_for("admin.backup"))
-    return render_template("admin/backup.html", status=backups.rotation_status(db()),
+    return render_template("admin/backup.html", status=backups.rotation_status(db()), sso=_is_sso(),
+                           mfa=db().mfa(g.user["id"])["enabled"],
                            old_key=bool(os.environ.get("PYFRC2G_SECRET_KEY_OLD", "").strip()),
                            min_length=backups.MIN_PASSPHRASE)
+
+
+def _is_sso():
+    from pyfrc2g_web.oidc import is_sso_user
+
+    return is_sso_user(g.user)
+
+
+def _reauthenticated():
+    """Step-up before a sensitive download: the password (and the TOTP code when the second factor is on).
+
+    An SSO account has no local password: its sign-in must be recent (15 minutes) instead.
+    """
+    from datetime import datetime
+
+    if _is_sso():
+        created = db().session_created(g.session_token)
+        try:
+            return time.time() - datetime.strptime(created, "%Y-%m-%d %H:%M:%S").timestamp() < 900
+        except (TypeError, ValueError):
+            return False
+    keys = (f"stepup:{g.user['id']}",)
+    if current_app.throttle.blocked(*keys):
+        return False
+    ok = security.check_password(g.user, request.form.get("current", ""))
+    if ok and db().mfa(g.user["id"])["enabled"]:
+        from pyfrc2g_web.routes import _second_factor_ok
+
+        ok = _second_factor_ok(request.form.get("code", ""))
+    if ok:
+        current_app.throttle.reset(*keys)
+    else:
+        current_app.throttle.fail(*keys)
+    return ok
 
 
 def _send_and_delete(path):
@@ -753,7 +838,7 @@ def policies():
 # ---------------------------------------------------------------------------
 
 @bp.route("/exceptions")
-@permission_required("audit")
+@audit_required
 def exceptions():
     """List accepted risks with their approval status and upcoming expirations."""
     from datetime import date

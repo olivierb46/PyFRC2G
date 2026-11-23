@@ -12,7 +12,7 @@
 <td><a href="{{ url_for('admin.firewall', firewall_id=fw.id) }}"><b>{{ fw.name }}</b></a>{% if o.description %}<div class="small muted">{{ o.description }}</div>{% endif %}</td><td>{{ fw.type }}</td>
 <td class="mono">{{ fw.config.url }}</td>
 <td>{{ o.site }}{% for t in o.tags %} <span class="tag">{{ t }}</span>{% endfor %}</td>
-<td>{{ badge("enabled", "ok") if fw.enabled else badge("disabled") }}{% if fw.config.verify_ssl or fw.config.ca_pem %} {{ badge("TLS verified", "info") }}{% endif %}</td>
+<td>{{ badge("enabled", "ok") if fw.enabled else badge("disabled") }}{% if fw.config.verify_ssl or fw.config.ca_pem %} {{ badge("TLS verified", "info") }}{% else %} <span title="The certificate of this firewall is not checked: the API key can be read on the network path" class="badge HIGH">TLS not verified</span>{% endif %}</td>
 <td class="nowrap">{% if o.schedule_mode == "manual" %}<span class="muted">manual</span>{% elif o.schedule_mode == "custom" %}every {{ o.schedule }}{% elif schedule %}every {{ schedule }} <span class="muted small">(global)</span>{% else %}<span class="muted">none</span>{% endif %}</td>
 <td>{% if gw %}<a href="{{ url_for('main.gateway', name=gw.name) }}">{{ gw.updated }}</a>{% else %}<span class="muted">never</span>{% endif %}</td>
 <td>{{ level_badge(gw.level if gw else None) }}</td>

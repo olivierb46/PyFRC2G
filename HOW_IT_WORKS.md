@@ -251,6 +251,8 @@ The **metadata** of every report gives the integrity proof: the SHA-256 fingerpr
 | **Compare** | Comparison of two firewalls or two analyses. |
 | **Analyses** | Journal of the analyses, with their live log. |
 | **Trends** | Per firewall, over the stored analyses: risk score, findings, overly permissive rules (any → any), critical + high findings, number of rules. |
+| **Flow search** | "Can A reach B on this port?" evaluated on the rules of the stored analyses. |
+| **Compliance** | Controls of ISO 27001:2022, CIS v8 and NIS2 met or not, from the audit findings. |
 | **Administration** | API firewalls, global settings, policies per site / tag, accepted risks, CISO Assistant, users, sessions, backup and keys, event log. |
 
 ### Roles
@@ -280,6 +282,23 @@ upload files (that could create a firewall outside the scope) nor accept a risk 
 Administrators are never restricted; the event log and the accepted risks list are not filtered
 either (visible to admins and auditors).
 
+### Rule review, cleanup, flow search, compliance
+
+- **Rule review**: a rule can have an owner, a ticket and a comment, and a review date; one not reviewed for the
+  review period (12 months by default) is overdue. The notes follow the rule from one analysis to the next.
+- **Cleanup plan**: unused, shadowed, redundant, overlapping, disabled and undocumented rules with the advice for
+  each and the score without them. Useful before a review: it is where the rule base can shrink.
+- **Flow search**: for a source, a destination, a protocol and a port, the first rule of each interface that covers
+  the whole flow, and the earlier rules that may also apply. A rule using something that cannot be resolved (FQDN,
+  URL table) is *uncertain*, never counted as a match. NAT and routing are not simulated: it answers "what do the
+  rules say", not "what happens on the wire".
+- **Compliance**: each audit check is mapped to controls of ISO 27001:2022 (A.8.20, A.8.22, A.8.9, A.5.37), CIS
+  Controls v8 (12.2, 13.4, 4.1), NIS2 article 21(2) (a, g), PCI DSS v4.0 requirement 1 (1.2.1, 1.2.5, 1.2.7, 1.3.1,
+  1.3.2), NIST CSF 2.0 (PR.IR-01, PR.PS-01), NIST SP 800-53 r5 (SC-7, AC-4, CM-6) and the measures of the ANSSI
+  hygiene guide. A control is met for a firewall when none of its
+  checks has an active finding; accepted risks are left out. The mapping is indicative, to prepare an audit. Administrators can add their own frameworks on the Compliance
+  page: a name, then controls mapped to checks (including `POLICY:<id>` for the rules of the compliance policy).
+
 ### Notifications and scheduled reports
 
 Administration > Notifications. After each analysis the application compares the result with the
@@ -289,7 +308,10 @@ Administration > Notifications. After each analysis the application compares the
   not findings, so they never alert; a finding whose acceptance has expired does);
 - a **rise of the risk score** by at least a threshold (10 points by default);
 - a **new permissive rule** (any → any checks);
-- a **failed analysis**.
+- a **failed analysis**;
+- an API firewall **not analysed for too long** (48 hours by default; announced once);
+- a rule **change outside the maintenance window** (windows such as `mon-fri 22:00-06:00`, global or per
+  firewall; the time compared is the one of the analysis that detects the change).
 
 A given finding is announced once. The very first analysis of a firewall is the baseline: it sends nothing.
 Alerts go to **channels**: email, JSON webhook (signed with an HMAC if a secret is set), Slack or Microsoft
@@ -297,13 +319,30 @@ Teams. Each channel picks its events, may be limited to some firewalls (site, ta
 **minimal** content (firewall, score, number of new findings: the safe choice for an external service) or the
 **detailed** list of new findings.
 
-**Scheduled reports** e-mail the dashboard export (PDF or Excel, optionally for one site or tag) every day,
-week or month to a list of recipients.
+**Weekly summary**: a schedule can send a text summary instead of a file (score changes, stale firewalls, accepted
+risks about to expire, rules to review).
+
+**Scheduled reports** e-mail the dashboard export (PDF or Excel, optionally for one site or tag) to a list of
+recipients. The schedule is a **cron expression** in server time: `minute hour day-of-month month day-of-week`,
+for example `0 7 * * 1` (every Monday at 07:00), `0 7 * * 1-5` (weekdays), `0 8 1 * *` (the 1st of each month).
+Lists, ranges, steps (`*/2`), names (`mon`, `jan`) and `@daily`, `@weekly`, `@monthly` are accepted; a report is
+sent at most once an hour. The page shows the next run of each schedule.
 
 Safeguards: TLS with certificate verification for mail; webhook URLs in `https://` only, Slack / Teams URLs
 restricted to the vendors' domains, no webhook towards private or local addresses (SSRF), no redirect followed;
 recipients can be restricted to given domains (`PYFRC2G_MAIL_ALLOWED_DOMAINS`). URLs, secrets and recipients
 are encrypted in the database; each delivery (or failure) is in the event log.
+
+### Passwords, API tokens and metrics
+
+**Two-factor authentication**: a local account can require a code from an authenticator app after the password
+(TOTP, RFC 6238), with single-use recovery codes; an administrator can make it mandatory (`PYFRC2G_MFA_REQUIRED`) or
+reset it for a user who lost their device. SSO accounts use the second factor of their identity provider.
+
+A password chosen by someone else (first administrator from the environment, new user, reset) has to be changed at the
+first sign-in. Scripts use **API tokens** (My account): they act as their owner, with the same role and firewalls,
+are stored hashed and expire. `/metrics` exposes the scores and the age of the analyses to Prometheus when a token
+is configured.
 
 ### Sessions
 

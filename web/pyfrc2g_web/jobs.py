@@ -11,6 +11,7 @@ One analysis at a time (the alias maps of the analysis modules are process-wide)
 """
 
 import csv
+import io
 import json
 import logging
 import mimetypes
@@ -84,7 +85,30 @@ def _extract(archive, target):
             tf.extractall(root, members=members, **extra)
 
 
+MAX_CONFIG_MEMBER = 5 * 1024 * 1024  # A configuration taken out of an archive.
+MAX_UNPACKED = 200 * 1024 * 1024  # Decompressed size of a tar archive.
 NFSENSEI_CONFIG_NAMES = ("running.yaml", "config.yaml.lkg")
+
+
+def _unpack_bounded(content):
+    """Return the tar stream of a (compressed) archive, refusing one that expands beyond MAX_UNPACKED."""
+    import bz2
+    import gzip
+    import lzma
+
+    source = io.BytesIO(content)
+    if content[:2] == b"\x1f\x8b":
+        stream = gzip.GzipFile(fileobj=source)
+    elif content[:3] == b"BZh":
+        stream = bz2.BZ2File(source)
+    elif content[:6] == b"\xfd7zXZ\x00":
+        stream = lzma.LZMAFile(source)
+    else:
+        return content
+    data = stream.read(MAX_UNPACKED + 1)
+    if len(data) > MAX_UNPACKED:
+        raise tarfile.TarError("archive too large once unpacked")
+    return data
 
 
 def slim_upload(filename, content):
@@ -93,8 +117,6 @@ def slim_upload(filename, content):
     hashes and certificates) is reduced to its running.yaml before being stored. Anything else is
     returned unchanged. Return (filename, content).
     """
-    import io
-
     lowered = (filename or "").lower()
     if not lowered.endswith(ARCHIVE_SUFFIXES):
         return filename, content
@@ -105,14 +127,17 @@ def slim_upload(filename, content):
                 names = [i.filename for i in zf.infolist() if not i.is_dir() and i.filename.count("/") <= 1]
                 for config_name in NFSENSEI_CONFIG_NAMES:
                     wanted = next((n for n in names if os.path.basename(n) == config_name), None)
-                    if wanted:
-                        return f"{base_name(filename)}-{config_name}", zf.read(wanted)
+                    if wanted and zf.getinfo(wanted).file_size < MAX_CONFIG_MEMBER:  # No decompression bomb.
+                        with zf.open(wanted) as member:
+                            data = member.read(MAX_CONFIG_MEMBER + 1)
+                        if len(data) <= MAX_CONFIG_MEMBER:
+                            return f"{base_name(filename)}-{config_name}", data
         else:
-            with tarfile.open(fileobj=io.BytesIO(content)) as tf:
+            with tarfile.open(fileobj=io.BytesIO(_unpack_bounded(content)), mode="r:") as tf:
                 members = [m for m in tf.getmembers() if m.isfile() and m.name.lstrip("./").count("/") <= 1]
                 for config_name in NFSENSEI_CONFIG_NAMES:
                     member = next((m for m in members if os.path.basename(m.name) == config_name), None)
-                    if member is not None and member.size < 5 * 1024 * 1024:
+                    if member is not None and member.size < MAX_CONFIG_MEMBER:
                         return f"{base_name(filename)}-{config_name}", tf.extractfile(member).read()
     except (OSError, tarfile.TarError, zipfile.BadZipFile, KeyError):
         pass
@@ -332,6 +357,8 @@ def _build_analysis(config, gateway_dir, host, source_label, run_id):
     from pyfrc2g.analysis.risk import level
     from pyfrc2g.model.rules import interface_stats
 
+    from pyfrc2g_web import flows
+
     rows = _read_csv(os.path.join(gateway_dir, f"{host}_ALL_flows.csv")) or []
     audit = _read_csv(os.path.join(gateway_dir, f"{host}_AUDIT.csv")) or []
     # Accepted risks are not in the audit CSV: keep them (without their justification, re-read from the
@@ -352,6 +379,7 @@ def _build_analysis(config, gateway_dir, host, source_label, run_id):
     data = {
         "gateway": host, "gateway_type": config.gateway_type, "source": source_label,
         "generated": now(), "run_id": run_id, "fingerprint": fingerprint,
+        "maps": flows.snapshot(),  # Alias tables, for the flow search.
         "rules": rows, "audit": audit, "audit_all": everything, "severities": severities,
         "changes": _read_csv(os.path.join(gateway_dir, f"{host}_CHANGES.csv")),
         "nat": _read_csv(os.path.join(gateway_dir, f"{host}_NAT.csv")) or [],
@@ -386,6 +414,8 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
     config = loaded[0]
     host = os.path.basename(os.path.normpath(config.graph_output_dir))
     gateway_dir = config.graph_output_dir
+    if os.path.commonpath([os.path.realpath(gateway_dir), os.path.realpath(work)]) != os.path.realpath(work):
+        raise JobError("the firewall name would write outside the work directory")
     previous = db.gateway(host)
     _restore_state(gateway_dir, host, previous["state"] if previous else {})
 
@@ -421,6 +451,8 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
             labels = next(({"site": gw["site"], "tags": gw["tags"]} for gw in access.labelled_gateways(db)
                            if gw["name"] == host), {})
             notify.analysis_alert(db, previous, data, host, labels)
+            notify.check_window(db, host, data, (opts or {}).get("change_windows") or settings.get("change_windows"),
+                                labels)
         db.prune_analyses(gateway_id, (opts or {}).get("retention") or settings.get("retention", 30))
         logging.info(f"✓ Analysis of {host} stored ({len(artifacts)} files, encrypted)")
         if fwopts.ciso_auto(opts, settings) if opts else settings.get("ciso_auto"):
@@ -564,6 +596,9 @@ def _run_sources(state, run_id, sources, settings, prefetched, exit_code, gatewa
                 # The gateway name is known once the file is read: apply its own settings (and the
                 # ones given with the upload), then read the file again with them.
                 known = db.gateway(loaded[0].gateway_name)
+                if known and known["kind"] != "upload":  # Would replace the analysis of an API firewall.
+                    raise JobError(f"{loaded[0].gateway_name}: a firewall read through its API already has this "
+                                   "name: give the file another name")
                 known = known if known and known["kind"] == "upload" else None
                 hints = {key: source[key] for key in ("site", "ciso_folder_id", "ciso_evidence_id")
                          if source.get(key)}
@@ -707,7 +742,17 @@ class Scheduler:
                 logging.error(f"Scheduler error: {e}")
             self._remind()
             self._reports()
+            self._stale()
             time.sleep(60)
+
+    def _stale(self):
+        """Alert on the API firewalls whose last analysis is too old."""
+        try:
+            from pyfrc2g_web import notify
+
+            notify.check_stale(self.db)
+        except Exception as e:
+            logging.error(f"Stale-analysis check error: {e}")
 
     def _reports(self):
         """Send the scheduled e-mail reports that are due (see notify.run_reports)."""
@@ -728,5 +773,8 @@ class Scheduler:
 
             self.db.set_meta("risk_reminder_day", today)
             exceptions.remind(self.db, self.reminder_days)
+            from pyfrc2g_web import review
+
+            review.remind(self.db)
         except Exception as e:
-            logging.error(f"Accepted-risk reminder error: {e}")
+            logging.error(f"Reminder error: {e}")

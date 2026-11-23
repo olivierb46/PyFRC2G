@@ -22,6 +22,8 @@ Environment variables
 
 The firewalls a non-admin user sees are set by the access scopes (Administration > Users): they map
 IdP groups to sites / tags / firewalls and are recomputed at each sign-in.
+    PYFRC2G_OIDC_REVALIDATE_MINUTES  an SSO session lasts at most this long (default 60), then the user goes back
+                                  to the identity provider: a revoked account or a changed group is noticed
     PYFRC2G_OIDC_AUTH_METHOD      "client_secret_post" (default) or "client_secret_basic"
     PYFRC2G_OIDC_REDIRECT_URI     force the callback URL (default: <this server>/oidc/authorize)
 
@@ -36,7 +38,7 @@ account whose name matches a local account is refused (no takeover of a local ad
 import logging
 import os
 
-from flask import current_app, flash, session, url_for
+from flask import abort, current_app, flash, request, session, url_for
 
 from pyfrc2g_web import security
 
@@ -118,6 +120,12 @@ def init_app(app, data_dir, settings, redis_client=None):
     Session(app)  # Must come before anything uses the session.
     OpenIDConnect(app, prefix=CALLBACK_PREFIX)
     app.extensions["pyfrc2g_oidc"] = settings
+
+    @app.before_request
+    def _local_next_only():  # The library accepts "//evil.example" as a return address: only local paths are.
+        nxt = request.args.get("next")
+        if request.path.startswith(CALLBACK_PREFIX) and nxt is not None and security.safe_next(nxt) != nxt:
+            abort(400, "Invalid return address.")
     app.jinja_env.globals["sso_enabled"] = True
     # weak=False: the receiver is a module-level function, kept alive anyway.
     after_authorize.connect(_on_authorize, weak=False)
@@ -189,6 +197,7 @@ def _on_authorize(sender, token=None, return_to=None, **kwargs):
                        "name of a local account")
     elif user["role"] != role:
         db.update_user(user["id"], role=role)
+        db.delete_user_api_tokens(user["id"])  # Tokens were made with the previous role.
         db.add_event(username, "role changed", f"{role} (SSO)")
         user = db.user(username=username)
     from pyfrc2g_web import access
@@ -197,6 +206,7 @@ def _on_authorize(sender, token=None, return_to=None, **kwargs):
                                                                    _groups(claims, settings["groups_claim"]))
     if scope != access.parse_scope(user.get("scope")):
         db.update_user(user["id"], scope=scope)
+        db.delete_user_api_tokens(user["id"])
         db.add_event(username, "scope changed", access.describe(scope) + " (SSO)")
         user = db.user(username=username)
     security.login_user(user)

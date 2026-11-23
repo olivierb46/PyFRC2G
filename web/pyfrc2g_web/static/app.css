@@ -28,7 +28,15 @@ code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
            display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh; }
 .brand { display: flex; align-items: center; gap: 10px; color: #fff; font-weight: 700; font-size: 17px; padding: 4px 10px 18px; }
 .brand svg { width: 28px; height: 28px; }
-.nav-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; opacity: .6; padding: 14px 10px 4px; }
+.nav { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.35) transparent; }
+.nav-foot { flex: 0 0 auto; overflow: visible; margin-top: 6px; }
+.nav-title { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: 0; color: inherit; font: inherit; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; opacity: .7; padding: 12px 10px 6px; text-align: left; cursor: pointer; border-radius: 8px; }
+.nav-title svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .8; }
+.nav-title::after { content: ""; flex-shrink: 0; margin-left: auto; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-2px) rotate(45deg); transition: transform .15s; }
+.nav-title:hover { opacity: 1; background: rgba(255,255,255,.04); }
+.nav-group.collapsed .nav-items { display: none; }
+.nav-group.collapsed .nav-title::after { transform: translateX(-2px) rotate(-45deg); }
+.nav-title:focus-visible, .nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .nav a { display: flex; align-items: center; gap: 10px; color: var(--side-fg); padding: 8px 10px; border-radius: 8px; font-weight: 500; }
 .nav a svg { width: 18px; height: 18px; opacity: .85; }
 .nav a:hover { background: rgba(255,255,255,.06); text-decoration: none; }
@@ -115,8 +123,6 @@ input[type=file]::file-selector-button { font: inherit; font-weight: 600; color:
 input.w-xs, select.w-xs { width: 6rem; }
 input.w-sm, select.w-sm { width: 10rem; }
 input.w-wide { width: 22rem; }
-.field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.field-row label { margin: 0; }
 /* Compact controls in inline forms (tables, toolbars) */
 form.inline-row { align-items: center; }
 form.inline-row label { margin: 0; }
@@ -214,6 +220,9 @@ pre.log { background: #0b1220; color: #d6e2ff; border-radius: var(--radius); pad
   .layout { flex-direction: column; }
   .sidebar { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 10px 12px; }
   .nav-title, .sidebar .user span { display: none; }
+  .nav { flex: 1 1 100%; overflow: visible; display: flex; flex-wrap: wrap; gap: 2px; }
+  .nav-group, .nav-items { display: contents; }
+  .nav-foot { flex: 0 0 auto; margin: 0; }
   .brand { padding: 4px 10px; }
   .sidebar .user { margin: 0 0 0 auto; border: none; padding: 0; }
   .main { padding: 18px 16px 40px; }
@@ -245,3 +254,14 @@ pre.log { background: #0b1220; color: #d6e2ff; border-radius: var(--radius); pad
 .doc :not(pre) > code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
 .doc .table-wrap { margin: 12px 0; }
 @media (max-width: 900px) { .doc-layout { grid-template-columns: minmax(0, 1fr); } .doc-toc { position: static; } }
+
+/* Two-factor setup */
+.qr { display: inline-block; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.qr svg { display: block; max-width: 100%; height: auto; shape-rendering: crispEdges; }
+
+/* Toggle switch (checkbox class="toggle") */
+input.toggle { appearance: none; -webkit-appearance: none; flex-shrink: 0; width: 38px; height: 22px; margin: 0; border-radius: 11px; background: var(--line); border: 1px solid var(--line); position: relative; cursor: pointer; transition: background .15s; }
+input.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
+input.toggle:checked { background: var(--accent); border-color: var(--accent); }
+input.toggle:checked::after { transform: translateX(16px); }
+input.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

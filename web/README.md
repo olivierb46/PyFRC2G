@@ -89,6 +89,8 @@ above (`pyfrc2g-web` declares `pyfrc2g>=2.3.0`).
 - **CISO Assistant** (admin): send the PDF report of an analysis as a new revision of an evidence, manually from the firewall page or automatically after each new analysis; default evidence plus one evidence per firewall, connection test, history of the uploads
 - **How it works**: the page rendered from [`HOW_IT_WORKS.md`](../HOW_IT_WORKS.md) (analysis steps, findings, risk score, accepted risks, reports, CISO Assistant). The application serves its copy `pyfrc2g_web/docs/how-it-works.md`: after editing the file at the repository root, run `cp HOW_IT_WORKS.md web/pyfrc2g_web/docs/how-it-works.md`
 - **Users** (admin): `admin`, `operator`, `auditor` and `viewer` roles, optional firewall scope per user or per SSO group; **sessions** (list, revoke, limit); **event log** of sign-ins, changes, uploads and analyses, exportable (CSV / JSON, SIEM)
+- **Rule review, cleanup plan, flow search, compliance**: owner / ticket / review date per rule, rules to tidy with the score gain, "can A reach B on port P?", indicative ISO 27001 / CIS / NIS2 mapping
+- **REST API and Prometheus metrics**: personal API tokens (`/api/v1`), `/metrics` for monitoring
 - **Notifications** (admin): alerts (email, webhook, Slack, Teams) on new critical findings or risk drift, scheduled PDF / Excel reports by email
 - **Trends**: risk score, findings, permissive rules and rule count over time, per firewall
 - **Backup & keys** (admin): encrypted backup download, key rotation (see below)
@@ -167,7 +169,8 @@ provider: `https://<your-host>/oidc/authorize`. The login page then shows a "Sig
   `PYFRC2G_OIDC_ALLOWED_GROUPS` restricts who may sign in at all.
 - An SSO user whose name equals a local account is refused (no takeover of a local administrator).
 - Sessions become server-side (files in `<data dir>/sessions`, mode 0700; the cookie holds only a
-  random identifier, renewed at sign-in). Sign-out ends the application session, not the one at the
+  random identifier, renewed at sign-in). An SSO session lasts `PYFRC2G_OIDC_REVALIDATE_MINUTES` (60 by default): then
+  the user is sent back to the identity provider, which is how a revocation or a change of group there takes effect. Sign-out ends the application session, not the one at the
   identity provider. Local accounts keep working as a break-glass access.
 
 ### Roles, firewall scopes and sessions
@@ -178,6 +181,9 @@ provider: `https://<your-host>/oidc/authorize`. The login page then shows a "Sig
 | `operator` | run analyses (API firewalls, re-analysis), upload files, *propose* accepted risks |
 | `auditor` | read everything, export reports, read the event log and the accepted risks (read only) |
 | `viewer` | read dashboards, reports and graphs, export them |
+
+A password set by someone else (the administrator created in `.env`, a new user, a reset) must be changed at the
+first sign-in: until then only the account page is reachable.
 
 With SSO, groups map to roles: `PYFRC2G_OIDC_ADMIN_GROUPS`, `..._OPERATOR_GROUPS`, `..._AUDITOR_GROUPS`,
 `..._VIEWER_GROUPS` (the most privileged matching role wins). Existing `viewer` / `admin` accounts keep
@@ -244,9 +250,18 @@ finding is announced once; the first analysis of a firewall is the baseline and 
 can be limited to some firewalls (`site: Paris; tag: prod; fw: fw1`) and sends either *minimal* content
 (firewall, score, counts) or the *detailed* new findings. *Test* sends a harmless message.
 
+**More events.** *Analysis too old*: an API firewall not analysed for N hours (default 48, 0 = never; once per
+silent period). *Change outside the maintenance window*: rule changes found by an analysis outside the windows
+(`mon-fri 22:00-06:00`, one per line, globally in Settings or per firewall); the time is the one of the analysis, a
+configuration does not say when it was changed. *Weekly summary* is a report format sent in the body of the email
+(score changes, stale firewalls, accepted risks expiring, rules to review), planned like the other reports.
+
 **Scheduled reports.** The PDF or Excel export of the dashboard, optionally filtered by site or tag, is
-e-mailed every day, week or month (hour of the server) to a list of recipients; *Send now* triggers one. After
-a stop of the application the missed report is sent once at restart.
+e-mailed to a list of recipients on a **cron schedule** (server time): `minute hour day-of-month month
+day-of-week`, e.g. `0 7 * * 1` every Monday at 07:00, `0 7 * * 1-5` on weekdays, `0 8 1 * *` the 1st of each
+month. Lists, ranges, steps (`*/2`), names (`mon`, `jan`) and `@daily` / `@weekly` / `@monthly` work; at most one
+report per hour. The page shows the next run; *Send now* triggers one. After a stop of the application the
+missed report is sent once at restart.
 
 **Security.** Mail uses STARTTLS or TLS with certificate verification (`none` only for a server on the
 machine itself); recipients are validated (no header injection) and can be restricted with
@@ -258,6 +273,92 @@ it for an internal collector); redirects are not followed. URLs, secrets and rec
 database, never shown again, and included in the backup and the key rotation. Messages are sent in the
 background (3 attempts) so a collector that is down never slows an analysis; every success or failure is in
 the event log (class of the error only, never the URL).
+
+### Two-factor authentication (TOTP)
+
+Local accounts can add a **time-based one-time code** (RFC 6238: 6 digits, 30 seconds, as shown by Aegis, FreeOTP,
+Google or Microsoft Authenticator, Bitwarden, 1Password...) to their password. *My account > Two-factor
+authentication*: scan the QR code (the key can also be typed), confirm with a first code, and keep the **10 recovery
+codes** (single use, shown once). At sign-in the password is followed by a code; a code works once (replay
+protection), tolerates one 30-second step of clock drift and counts in the sign-in throttle. Turning it off or
+renewing the recovery codes asks for the password and a code. An administrator can reset the factor of a user who
+lost both the phone and the codes (*Users > Reset MFA*, written to the event log; the user enrols again).
+
+`PYFRC2G_MFA_REQUIRED=admin` (administrators) or `all` (every local user) forces the enrolment at the next sign-in
+and forbids turning it off. SSO users are not concerned: their identity provider handles the second factor. API tokens
+are separate credentials, kept as they are. The secret and the recovery code hashes are encrypted in the database
+(and covered by the backup and the key rotation). The QR code is drawn with the small `segno` library; without it
+the key is typed by hand.
+
+### Rule review, cleanup plan, flow search and compliance
+
+- **Rule review** (*Rule review* button of a firewall): each rule can carry an **owner**, a **ticket** and a comment
+  and is **reviewed** on a date. A rule not reviewed for *review period* months (default 12, set on the page by an
+  administrator, 0 = off) is *overdue*. Notes are kept across analyses (a rule is identified by its id, else its
+  text). Operators and administrators edit; the others read. A daily `rules to review` event reaches the event log
+  and the SIEM when the count of a firewall changes.
+- **Cleanup plan** (*Cleanup plan* button, CSV download): the unused, shadowed, redundant, partially overlapping,
+  disabled and undocumented rules, with what to do and the risk score the firewall would get without them.
+- **Flow search** (*Flow search* page): "can A reach B on this protocol and port?". The rules of each interface are
+  read in order and the first one covering the whole flow decides; the aliases and interface names are resolved
+  with the tables stored with the analysis (analyse the firewall again once after the upgrade). A rule using an
+  FQDN, a URL table or another unresolvable alias is shown as uncertain, never as a match. NAT, routing and the real
+  traffic are not simulated.
+- **Compliance** (*Compliance* page, CSV): an indicative mapping of the audit checks to controls of ISO 27001:2022,
+  CIS Controls v8, NIS2 (art. 21(2)), PCI DSS v4.0 (requirement 1), NIST CSF 2.0, NIST SP 800-53 r5 and the ANSSI
+  hygiene guide. A control is met for a firewall when none of its checks has an active
+  finding. It prepares an audit; it is not a certification. Administrators add **their own frameworks** on the page
+  (`[Name]` then `ID | Title | CHECK, CHECK` lines; a check is an engine check such as `ANY_ANY` or `POLICY:<id>`,
+  `*` is a wildcard). All these pages only show the firewalls of the user scope.
+
+### REST API and tokens
+
+Every user creates **API tokens** on *My account* (10 at most, with an expiry; the token is shown once and stored
+hashed). A token acts as its owner, with their current role and firewall scope, and is revoked at once when the
+account is deleted or its password is reset; administrators list and revoke every token (*API tokens*).
+
+```
+curl -H "Authorization: Bearer $TOKEN" https://pyfrc2g.example.com/api/v1/firewalls
+```
+
+| Call | Role |
+|---|---|
+| `GET /api/v1/me`, `/firewalls`, `/firewalls/<name>` (score, findings), `/firewalls/<name>/analyses`, `/runs/<id>` | any |
+| `POST /api/v1/firewalls/<name>/analyse` (an API firewall) | operator, admin |
+| `POST /api/v1/uploads` (multipart `file`, optional `format`, `name`, `site`; for a user without firewall scope) | operator, admin |
+
+Answers are JSON (`{"error": "..."}` with the status code on failure); failed attempts are throttled per address.
+
+### Metrics for Prometheus
+
+Set `PYFRC2G_METRICS_TOKEN` and scrape `/metrics` with `Authorization: Bearer <token>` (404 while the variable is
+empty). Gauges per firewall: `pyfrc2g_firewall_risk_score`, `_findings`, `_critical_findings`, `_rules`,
+`_last_analysis_timestamp_seconds`, `_analysis_age_seconds`; plus `pyfrc2g_runs{status}`, `pyfrc2g_sessions`,
+`pyfrc2g_accepted_risks{status}` and `pyfrc2g_web_info{version}`. The figures cover the whole instance.
+
+### HTTPS reverse proxy (nginx)
+
+The application speaks plain HTTP: to reach it from other machines, put the **nginx** service of `docker-compose.yml`
+in front (TLS termination, request limits). In `.env`:
+
+```
+COMPOSE_PROFILES=proxy          # or proxy,redis
+PYFRC2G_SERVER_NAME=pyfrc2g.example.com
+PYFRC2G_WEB_PROXY=1             # the application trusts exactly one proxy hop (real client address, https)
+PYFRC2G_WEB_SECURE_COOKIES=1
+```
+
+Put the certificate chain and the key in `nginx/certs/fullchain.pem` and `nginx/certs/privkey.pem` (from your CA or
+Let's Encrypt; `./nginx/self-signed.sh pyfrc2g.example.com` makes a self-signed one for a test; the folder is ignored
+by git and the files must be readable by the container user), then `docker compose up -d --build` and open
+`https://pyfrc2g.example.com/`. `PYFRC2G_HTTP_PORT` and `PYFRC2G_HTTPS_PORT` change the published ports (80 and 443).
+
+What it does: HTTP is redirected to the configured name only (never to the `Host` header of the client); TLS 1.2 and
+1.3 only, modern ciphers, one HSTS header; an unknown name gets no handshake; `X-Forwarded-*` are set by nginx and
+never copied from the client; sign-in, `/api/` and pages have their own request rate limits (429 beyond) and the
+upload size follows `PYFRC2G_WEB_MAX_UPLOAD_MB`; `/metrics` is not served on the Internet (scrape the application on
+`127.0.0.1:8080`). The container runs as an unprivileged user with a read-only filesystem and no capability. The
+application stays published on `127.0.0.1:8080` only: do not publish it on other addresses when the proxy is used.
 
 ### Redis session store (optional)
 
@@ -290,11 +391,29 @@ extracted without leaving their directory. The application is served by waitress
 HTTP: put a TLS reverse proxy (nginx, Traefik, Caddy...) in front of it when it is reachable
 from other machines.
 
+Also: signing out revokes the server-side session and a session never lives more than 12 hours; changing or
+resetting a password (or the second factor) revokes the API tokens of the account; the return address after
+sign-in must be a local path; the response time does not tell whether a user name exists; a firewall name read
+from an uploaded file cannot leave the work directory and cannot replace the analysis of a firewall read through its
+API; archives are bounded when unpacked (zip and tar bombs); a user limited to some firewalls only sees the runs
+that concern those firewalls and not the global event log; the engine refuses XML entities and DTDs, does not
+follow redirects with the credentials of a firewall, and bounds the expansion of aliases and the time of the policy
+regexes; a backup download asks for the password again (and the code of the second factor); session tokens are never
+listed; TLS verification of the firewalls is on by default (a toggle on each firewall and in Settings, with a warning
+when it is off); an SSO account's API tokens stop working when it has not signed in for 30 days (`PYFRC2G_OIDC_TOKEN_IDLE_DAYS`) and
+are revoked when its role or scope changes; the CLI only reads a `.env` of the current directory that belongs to the user and is not writable by
+others (`--env-file` reads any file).
+
+**Before exposing it:** serve it over HTTPS and set `PYFRC2G_WEB_SECURE_COOKIES=1`; choose a real
+`PYFRC2G_SECRET_KEY` (a Fernet key, not a short passphrase); change the first password; turn TLS verification on for
+the firewalls (*Verify TLS certificates*, with the internal CA if needed); consider `PYFRC2G_MFA_REQUIRED=admin`.
+
 
 ## 🔗 Compatibility
 
 | PyFRC2G-Web (`web/`) | PyFRC2G engine (`engine/`) |
 |----------------------|----------------------------|
+| 1.3.x | 2.3.0 or later |
 | 1.2.x | 2.3.0 or later |
 | 1.1.x | 2.3.0 or later |
 | 1.0.x | 2.2.0 or later |

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, data_table %}
+{% block title %}Cleanup plan · {{ gw.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Cleanup plan · <a class="plain" href="{{ url_for('main.gateway', name=gw.name) }}">{{ gw.name }}</a></h1>
+<div class="sub">Rules that can usually be removed or tidied, and the risk score without them.</div></div>
+<div class="actions">{% if result and result["items"] %}<a class="btn secondary" href="{{ url_for('main.cleanup_csv', name=gw.name) }}">Download CSV</a>{% endif %}</div></div>
+{% if not result %}<div class="card empty">No analysis stored for this firewall yet.</div>
+{% elif not result["items"] %}<div class="card empty">Nothing to clean up: no unused, shadowed, redundant or disabled rule.</div>
+{% else %}
+<div class="card"><div class="stat-row"><span>Risk score now <b>{{ result.score }}</b></span><span>Without these findings <b>{{ result.score_after }}</b></span>
+  <span>Gain <b>−{{ result.gain }}</b> point(s)</span><span>{{ result["items"]|length }} finding(s)</span></div>
+  <div class="help">The gain of a category is the drop of the score if only that category disappeared; gains do not add up exactly because the LOW findings count for 10 points at most.</div></div>
+<div class="table-wrap section"><table><thead><tr><th>Category</th><th>Findings</th><th>Gain</th><th>What to do</th></tr></thead><tbody>
+{% for grp in result.groups %}<tr><td><b>{{ grp.label }}</b> <span class="muted small">{{ grp.check }}</span></td><td>{{ grp.count }}</td><td>−{{ grp.gain }}</td><td class="small">{{ grp.advice }}</td></tr>{% endfor %}</tbody></table></div>
+<div class="section"><h2>Rules concerned</h2>
+{% call(field, value) data_table("cleanup", ["SEVERITY", "CHECK", "GATEWAY", "RULE ORDER", "RULE", "DETAIL"], result["items"]) %}{% if field == "SEVERITY" %}{{ badge(value) }}{% else %}{{ value }}{% endif %}{% endcall %}</div>
+{% endif %}
+{% endblock %}

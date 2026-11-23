@@ -4,6 +4,7 @@ graphs, reports, history), uploads, runs, trends, comparison, help, account.
 """
 
 import logging
+import time
 
 from flask import (
     Blueprint,
@@ -18,11 +19,12 @@ from flask import (
     url_for,
 )
 
-from pyfrc2g_web import access, security
+from pyfrc2g_web import access, api, security
 from pyfrc2g_web.security import admin_required, login_required, permission_required
 
 bp = Blueprint("main", __name__)
 
+MFA_WAIT = 300  # Seconds to type the second factor after the password.
 TABS = (("overview", "Overview"), ("rules", "Rules"), ("audit", "Audit"), ("changes", "Changes"),
         ("nat", "NAT"), ("matrix", "Zone matrix"), ("usage", "Rule usage"), ("graphs", "Graphs"),
         ("files", "Reports & files"), ("history", "History"))
@@ -45,7 +47,7 @@ def login():
         return redirect(url_for("main.dashboard"))
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        username = request.form.get("username", "").strip()[:64]  # Bounded: it is stored and used as a key.
         address = request.remote_addr or "?"
         throttle = current_app.throttle
         if throttle.blocked(address, f"user:{username}"):
@@ -53,6 +55,12 @@ def login():
         else:
             user = db().user(username=username)
             if security.check_password(user, request.form.get("password", "")):
+                if db().mfa(user["id"])["enabled"]:  # Second step: the code of the authenticator app.
+                    from flask import session
+
+                    session["mfa"] = {"uid": user["id"], "until": time.time() + MFA_WAIT,
+                                      "next": request.args.get("next") or ""}
+                    return redirect(url_for("main.login_mfa"))
                 throttle.reset(address, f"user:{username}")
                 security.login_user(user)
                 db().touch_login(user["id"])
@@ -70,12 +78,56 @@ def login():
     return render_template("login.html", error=error, no_users=db().count_users() == 0, sso_url=sso_url)
 
 
+@bp.route("/login/mfa", methods=["GET", "POST"])
+def login_mfa():
+    """Second step of the sign-in: a TOTP code or a recovery code (throttled like the password)."""
+    from flask import session
+
+    from pyfrc2g_web import mfa
+
+    pending = session.get("mfa")
+    if g.user is not None or not pending or pending.get("until", 0) < time.time():
+        session.pop("mfa", None)
+        return redirect(url_for("main.login"))
+    user = db().user(user_id=pending["uid"])
+    if user is None:  # Deleted between the two steps.
+        session.pop("mfa", None)
+        return redirect(url_for("main.login"))
+    error = None
+    if request.method == "POST":
+        address, throttle = request.remote_addr or "?", current_app.throttle
+        keys = (address, f"user:{user['username']}")
+        if throttle.blocked(*keys):
+            error = "Too many failed attempts: try again in 10 minutes."
+        else:
+            code, state = request.form.get("code", ""), db().mfa(user["id"])
+            step = mfa.verify(state["secret"], code, state["last"]) if state["secret"] else None
+            recovery = None if step is not None else mfa.match_recovery(code, state["recovery"])
+            if (step is not None and db().use_totp_step(user["id"], step)) or recovery:
+                if recovery:
+                    left = [h for h in state["recovery"] if h != recovery]
+                    db().set_recovery(user["id"], left)
+                    db().add_event(user["username"], "recovery code used", f"{len(left)} left")
+                throttle.reset(*keys)
+                session.pop("mfa", None)
+                security.login_user(user)
+                db().touch_login(user["id"])
+                db().add_event(user["username"], "sign-in", f"{address} (MFA)")
+                return redirect(security.safe_next(pending.get("next")))
+            throttle.fail(*keys)
+            db().add_event(user["username"], "failed sign-in", f"{address} (MFA)")
+            error = "Invalid code."
+    return render_template("login_mfa.html", error=error)
+
+
 @bp.route("/logout", methods=["POST"])
 def logout():
     from flask import session
 
     if g.user:
         db().add_event(g.user["username"], "sign-out")
+        if g.session_token:
+            db().delete_sessions(token=g.session_token)  # The cookie must not work any more once signed out.
     session.clear()
     return redirect(url_for("main.login"))
 
@@ -86,6 +138,26 @@ def health():
     return Response("ok", mimetype="text/plain")
 
 
+@bp.route("/metrics")
+def metrics():
+    """Prometheus metrics, protected by the bearer token PYFRC2G_METRICS_TOKEN (404 when it is not set)."""
+    import hmac
+    import os
+
+    from pyfrc2g_web import metrics as prometheus
+
+    token = os.environ.get("PYFRC2G_METRICS_TOKEN", "").strip()
+    if not token:
+        abort(404)
+    sent = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(sent.encode(), token.encode()):
+        return Response("unauthorized", status=401, headers={"WWW-Authenticate": "Bearer"})
+    from pyfrc2g_web import __version__
+
+    return Response(prometheus.render(db(), __version__), content_type=prometheus.CONTENT_TYPE,
+                    headers={"Cache-Control": "no-store"})
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
@@ -94,9 +166,8 @@ def _visible_runs(limit, gateway=None):
     """Runs the user may see: all of them, or (scoped user) those of visible firewalls and their own."""
     if not access.is_restricted():
         return db().runs(limit=limit, gateway=gateway)
-    names, user_id = access.visible_names(db()), g.user["id"]
-    return db().runs(limit=limit, gateway=gateway,
-                     accept=lambda r: bool(set(r["gateways"]) & names) or r.get("user_id") == user_id)
+    names = access.visible_names(db())
+    return db().runs(limit=limit, gateway=gateway, accept=lambda r: access.run_visible(db(), r, names))
 
 
 def _filtered_gateways():
@@ -519,7 +590,7 @@ def _compare_side(value):
     if gw is None:
         return None, None
     analyses = db().analyses(gw["id"])
-    wanted = int(analysis_id) if analysis_id.isdigit() else None
+    wanted = int(analysis_id) if analysis_id.isascii() and analysis_id.isdigit() else None
     chosen = next((a for a in analyses if a["id"] == wanted), analyses[0] if analyses else None)
     return gw, (db().analysis(chosen["id"]) if chosen else None)
 
@@ -588,6 +659,161 @@ def export(fmt):
 
 
 # ---------------------------------------------------------------------------
+# Rule review, cleanup plan, flow search, compliance
+# ---------------------------------------------------------------------------
+
+def _latest_data(gateway):
+    """Return the latest analysis of a firewall, with the accepted risks applied (None if never analysed)."""
+    from pyfrc2g_web import exceptions as accepted
+
+    analyses = db().analyses(gateway["id"])
+    if not analyses:
+        return None
+    return accepted.apply(db().analysis(analyses[0]["id"])["data"], db().exceptions(), gateway["name"])
+
+
+@bp.route("/firewalls/<name>/review", methods=["GET", "POST"])
+@login_required
+def review_rules(name):
+    """Owner, ticket and review date of the rules of a firewall."""
+    from pyfrc2g_web import review
+
+    gw = _gateway_or_404(name)
+    data = _latest_data(gw)
+    months = int(db().settings().get("review_months") or 0)
+    items = review.rows(data, db().rule_notes(gw["name"]), months) if data else []
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        if action == "months":
+            if not security.can("manage"):
+                abort(403)
+            value = request.form.get("review_months", type=int, default=12)
+            if not 0 <= value <= 120:
+                flash("Review period: 0 (no review) to 120 months.", "error")
+            else:
+                db().save_settings({"review_months": value})
+                db().add_event(g.user["username"], "review period changed", f"{value} months")
+                flash("Review period saved.", "ok")
+            return redirect(url_for("main.review_rules", name=gw["name"]))
+        if not security.can("analyse"):
+            abort(403)
+        known = {item["key"] for item in items}
+        keys = [k for k in request.form.getlist("keys") if k in known]
+        if not keys or action not in ("save", "review"):
+            flash("Select at least one rule.", "error")
+            return redirect(url_for("main.review_rules", name=gw["name"]))
+        # Empty = leave unchanged; the "clear" box empties the value.
+        fields = {}
+        for field, size in (("owner", 64), ("ticket", 64), ("comment", 500)):
+            value = request.form.get(field, "").strip()[:size]
+            fields[field] = "" if request.form.get(f"clear_{field}") else (value or None)
+        db().save_rule_notes(gw["name"], keys, g.user["username"], reviewed=action == "review", **fields)
+        db().add_event(g.user["username"], "rules reviewed" if action == "review" else "rule notes saved",
+                       f"{gw['name']}: {len(keys)} rule(s)")
+        flash(f"{len(keys)} rule(s) updated.", "ok")
+        return redirect(url_for("main.review_rules", name=gw["name"], status=request.args.get("status", "")))
+    status = request.args.get("status", "")
+    shown = [i for i in items if not status or i["status"] == status]
+    return render_template("review.html", gw=gw, items=shown, counts=review.counts(items), months=months,
+                           status=status, total=len(items))
+
+
+@bp.route("/firewalls/<name>/cleanup")
+@bp.route("/firewalls/<name>/cleanup.csv", endpoint="cleanup_csv")
+@login_required
+def cleanup_plan(name):
+    """Findings about rules that can be removed or tidied, with the score without them."""
+    from pyfrc2g_web import cleanup
+
+    gw = _gateway_or_404(name)
+    data = _latest_data(gw)
+    result = cleanup.plan(data) if data else None
+    if request.endpoint == "main.cleanup_csv":
+        if result is None:
+            abort(404)
+        db().add_event(g.user["username"], "export", f"cleanup plan {gw['name']}")
+        return Response(cleanup.to_csv(result), mimetype="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="{gw["name"]}-cleanup.csv"'})
+    return render_template("cleanup.html", gw=gw, result=result, categories=cleanup.CATEGORIES)
+
+
+@bp.route("/flows")
+@login_required
+def flows():
+    """Can A reach B on port P? Evaluated on the stored rules of the firewalls the user may see."""
+    from pyfrc2g_web import flows as flow_search
+
+    gateways = access.visible_gateways(db())
+    form = {key: request.args.get(key, "").strip() for key in ("firewall", "source", "destination", "protocol",
+                                                                "port")}
+    results, error = [], ""
+    if form["source"] or form["destination"]:
+        chosen = [gw for gw in gateways if not form["firewall"] or gw["name"] == form["firewall"]][:10]
+        for gw in chosen:
+            data = _latest_data(gw)
+            if data is None:
+                continue
+            try:
+                found = flow_search.search(data, form["source"], form["destination"], form["protocol"] or "any",
+                                           form["port"])
+            except flow_search.FlowError as e:
+                error = str(e)
+                break
+            results.append({"gateway": gw, **found})
+        if not error:
+            db().add_event(g.user["username"], "flow search",
+                           f"{form['source'][:60]} -> {form['destination'][:60]} {form['protocol'] or 'any'}/"
+                           f"{form['port'][:30] or 'any'}")
+    return render_template("flows.html", gateways=gateways, form=form, results=results, error=error,
+                           protocols=flow_search.PROTOCOLS)
+
+
+@bp.route("/compliance", methods=["GET", "POST"])
+@bp.route("/compliance.csv", endpoint="compliance_csv")
+@login_required
+def compliance():
+    """Compliance with security frameworks, from the audit findings of the firewalls the user may see."""
+    from pyfrc2g_web import frameworks
+
+    if request.method == "POST":
+        if not security.can("manage"):
+            abort(403)
+        text = request.form.get("custom_frameworks", "").strip()[:20000]
+        try:
+            frameworks.parse_custom(text)
+        except frameworks.FrameworkError as e:
+            flash(str(e), "error")
+            return render_compliance(text)
+        db().save_settings({"custom_frameworks": text})
+        db().add_event(g.user["username"], "custom frameworks changed", f"{len(text.splitlines())} line(s)")
+        flash("Frameworks saved.", "ok")
+        return redirect(url_for("main.compliance"))
+    return render_compliance(None)
+
+
+def render_compliance(draft):
+    """Compliance page (or CSV). `draft` is an unsaved text of the editor to show again after an error."""
+    from pyfrc2g_web import exports, frameworks
+
+    _, gateways, sites, tags, site, tag = _filtered_gateways()
+    items = [{"name": gw["name"], "data": item["data"]}
+             for gw, item in zip(gateways, exports.collect(db(), gateways))]
+    saved = db().settings().get("custom_frameworks") or ""
+    try:
+        custom = frameworks.parse_custom(saved)
+    except frameworks.FrameworkError:
+        custom = []
+    result = frameworks.evaluate(items, custom)
+    if request.endpoint == "main.compliance_csv":
+        db().add_event(g.user["username"], "export", "compliance csv")
+        return Response(frameworks.to_csv(result), mimetype="text/csv", headers={
+            "Content-Disposition": 'attachment; filename="pyfrc2g-compliance.csv"'})
+    return render_template("compliance.html", result=result, analysed=sum(1 for i in items if i["data"]),
+                           sites=sites, tags=tags, site=site, tag=tag, custom_text=saved if draft is None else draft,
+                           known_checks=frameworks.KNOWN_CHECKS)
+
+
+# ---------------------------------------------------------------------------
 # Documentation (HOW_IT_WORKS.md of the repository, copied to docs/)
 # ---------------------------------------------------------------------------
 
@@ -629,8 +855,7 @@ def run(run_id):
     item = db().run(run_id)
     if item is None:
         abort(404)
-    if access.is_restricted() and not (set(item["gateways"]) & access.visible_names(db())
-                                       or item.get("user_id") == g.user["id"]):
+    if not access.run_visible(db(), item):
         abort(404)
     return render_template("run.html", run=item, active=item["status"] in ("queued", "running"))
 
@@ -639,10 +864,27 @@ def run(run_id):
 # Account
 # ---------------------------------------------------------------------------
 
+def _account_page(**extra):
+    """Render the account page (password, two-factor authentication, API tokens)."""
+    from pyfrc2g_web import mfa
+    from pyfrc2g_web.oidc import is_sso_user
+
+    state = db().mfa(g.user["id"])
+    context = {"sso": is_sso_user(g.user), "scope_text": access.describe(access.user_scope()),
+               "tokens": db().api_tokens(g.user["id"]), "expiries": api.EXPIRY_CHOICES, "new_token": None,
+               "mfa_enabled": state["enabled"], "mfa_left": len(state["recovery"]),
+               "mfa_required": mfa.required_for(g.user), "mfa_setup": None, "recovery_codes": None}
+    context.update(extra)
+    response = Response(render_template("account.html", **context))
+    if extra:  # A secret, recovery codes or a token is shown: never cache it.
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @bp.route("/account", methods=["GET", "POST"])
 @login_required
 def account():
-    """Change the own password (local accounts only)."""
+    """Change the own password (local accounts only); also two-factor authentication and API tokens."""
     from pyfrc2g_web.oidc import is_sso_user
 
     sso = is_sso_user(g.user)  # Managed by the identity provider: no local password.
@@ -655,13 +897,118 @@ def account():
             flash("The new passwords do not match.", "error")
         elif security.password_problem(new):
             flash(security.password_problem(new), "error")
+        elif new == current:
+            flash("The new password must differ from the current one.", "error")
         else:
             db().update_user(g.user["id"], password_hash=security.hash_password(new))
+            db().delete_user_api_tokens(g.user["id"])  # A token created with a stolen session must not survive.
             db().add_event(g.user["username"], "password changed")
             security.login_user(db().user(user_id=g.user["id"]))  # Keep this session valid.
             flash("Password changed. Other sessions were signed out.", "ok")
             return redirect(url_for("main.account"))
-    return render_template("account.html", sso=sso, scope_text=access.describe(access.user_scope()))
+    return _account_page()
+
+
+def _second_factor_ok(code):
+    """Check a TOTP or recovery code of the signed-in user (throttled). Consumes what it accepts."""
+    from pyfrc2g_web import mfa
+
+    user, throttle = g.user, current_app.throttle
+    keys = (f"mfa:{user['id']}",)
+    if throttle.blocked(*keys):
+        return False
+    state = db().mfa(user["id"])
+    step = mfa.verify(state["secret"], code, state["last"]) if state["secret"] else None
+    if step is not None and db().use_totp_step(user["id"], step):
+        throttle.reset(*keys)
+        return True
+    recovery = mfa.match_recovery(code, state["recovery"]) if state["enabled"] else None
+    if recovery:
+        db().set_recovery(user["id"], [h for h in state["recovery"] if h != recovery])
+        db().add_event(user["username"], "recovery code used", "to confirm a security change")
+        throttle.reset(*keys)
+        return True
+    throttle.fail(*keys)
+    return False
+
+
+@bp.route("/account/mfa", methods=["POST"])
+@login_required
+def account_mfa():
+    """Set up, confirm, regenerate the recovery codes of, or turn off the two-factor authentication."""
+    from pyfrc2g_web import mfa
+    from pyfrc2g_web.oidc import is_sso_user
+
+    if is_sso_user(g.user):
+        abort(403)  # The identity provider is in charge of the second factor.
+    action, code = request.form.get("action", ""), request.form.get("code", "")
+    state = db().mfa(g.user["id"])
+    if action == "begin" and not state["enabled"]:
+        secret = mfa.new_secret()
+        db().begin_totp(g.user["id"], secret)
+        link = mfa.uri(secret, g.user["username"])
+        return _account_page(mfa_setup={"secret": mfa.spaced(secret), "uri": link, "svg": mfa.qr_svg(link)})
+    if action == "confirm" and not state["enabled"] and state["secret"]:
+        step = mfa.verify(state["secret"], code)
+        if step is None:
+            link = mfa.uri(state["secret"], g.user["username"])
+            flash("That code is not right: check the clock of your phone and try again.", "error")
+            return _account_page(mfa_setup={"secret": mfa.spaced(state["secret"]), "uri": link,
+                                            "svg": mfa.qr_svg(link)})
+        codes = mfa.new_recovery_codes()
+        db().enable_totp(g.user["id"], step, [mfa.hash_code(c) for c in codes])
+        db().add_event(g.user["username"], "mfa enabled")
+        flash("Two-factor authentication is on.", "ok")
+        return _account_page(recovery_codes=codes)
+    if action in ("regenerate", "disable") and state["enabled"]:
+        if not security.check_password(g.user, request.form.get("current", "")) or not _second_factor_ok(code):
+            flash("Password or code is wrong.", "error")
+        elif action == "disable":
+            if mfa.required_for(g.user):
+                flash("Two-factor authentication is required by the policy of this server.", "error")
+            else:
+                db().disable_totp(g.user["id"])
+                db().add_event(g.user["username"], "mfa disabled")
+                flash("Two-factor authentication is off.", "ok")
+        else:
+            codes = mfa.new_recovery_codes()
+            db().set_recovery(g.user["id"], [mfa.hash_code(c) for c in codes])
+            db().add_event(g.user["username"], "mfa recovery codes regenerated")
+            return _account_page(recovery_codes=codes)
+    elif action == "cancel" and not state["enabled"]:
+        db().disable_totp(g.user["id"])  # Drops an unconfirmed secret.
+    return redirect(url_for("main.account"))
+
+
+@bp.route("/account/tokens", methods=["POST"])
+@login_required
+def account_tokens():
+    """Create or revoke one of the own API tokens (the new token is shown once, on this response)."""
+    from datetime import date, timedelta
+
+    from pyfrc2g_web.oidc import is_sso_user
+
+    action = request.form.get("action", "")
+    if action == "revoke":
+        if db().delete_api_token(request.form.get("token_id", type=int), g.user["id"]):
+            db().add_event(g.user["username"], "api token revoked", request.form.get("name", "")[:64])
+            flash("Token revoked.", "ok")
+        return redirect(url_for("main.account"))
+    name = request.form.get("name", "").strip()[:64]
+    days = request.form.get("expires", "90")
+    if is_sso_user(g.user) and days == "0":
+        days = "365"  # No token without end for an account that the identity provider can revoke.
+    if action != "create" or not name or days not in dict(api.EXPIRY_CHOICES):
+        flash("Give the token a name and an expiry.", "error")
+        return redirect(url_for("main.account"))
+    if len(db().api_tokens(g.user["id"])) >= api.MAX_TOKENS_PER_USER:
+        flash(f"At most {api.MAX_TOKENS_PER_USER} tokens: revoke one first.", "error")
+        return redirect(url_for("main.account"))
+    token, token_hash, prefix = api.new_token()
+    expires = (date.today() + timedelta(days=int(days))).isoformat() if days != "0" else None
+    db().add_api_token(g.user["id"], name, token_hash, prefix, expires)
+    db().add_event(g.user["username"], "api token created", f"{name} (expires {expires or 'never'})")
+    return _account_page(new_token=token)
 
 
 # ---------------------------------------------------------------------------

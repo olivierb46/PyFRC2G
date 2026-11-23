@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}Compliance{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Compliance</h1>
+<div class="sub">Indicative mapping of the audit checks to the controls of security frameworks, on the latest analysis of {{ analysed }} firewall(s).
+A control is met for a firewall when none of its checks has an active finding (accepted risks are left out). It is a guide for audit preparation, not a certification.</div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('main.compliance_csv', site=site, tag=tag) }}">Download CSV</a></div></div>
+{% if sites or tags %}<form class="filters-bar card" method="get">
+  {% if sites %}<label for="f-site">Site</label><select id="f-site" name="site" data-autosubmit><option value="">All</option>{% for s in sites %}<option {{ 'selected' if s == site }}>{{ s }}</option>{% endfor %}</select>{% endif %}
+  {% if tags %}<label for="f-tag">Tag</label><select id="f-tag" name="tag" data-autosubmit><option value="">All</option>{% for t in tags %}<option {{ 'selected' if t == tag }}>{{ t }}</option>{% endfor %}</select>{% endif %}
+</form>{% endif %}
+{% for framework, info in result.items() %}
+<div class="card section"><h2>{{ framework }}{% if info.custom %} <span class="badge info">custom</span>{% endif %} <span class="muted small">{% if info.score is not none %}{{ info.score }}% of the controls met{% else %}no analysis yet{% endif %}</span></h2>
+<div class="table-wrap"><table><thead><tr><th>Control</th><th>Checks</th><th>Firewalls not meeting it</th></tr></thead><tbody>
+{% for c in info.controls %}<tr><td><b>{{ c.id }}</b> {{ c.title }}</td><td class="small mono">{{ c.checks|join(" ") }}</td>
+<td>{% if not c.total %}<span class="muted">no analysis</span>{% elif c.failing %}<span class="badge HIGH">{{ c.failing|length }} / {{ c.total }}</span> {% for n in c.failing %}<a href="{{ url_for('main.gateway', name=n, tab='audit') }}">{{ n }}</a>{{ ", " if not loop.last }}{% endfor %}{% else %}<span class="badge ok">all met</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
+{% endfor %}
+{% if can('manage') %}
+<form class="card section" method="post">{{ csrf() }}
+  <h2>Your own frameworks</h2>
+  <p class="help">Add a framework and map its controls to audit checks. A framework is a title between brackets, then one control per line:
+  <code>ID | Title | CHECK, CHECK</code>. A check is {% for c in known_checks %}<code>{{ c }}</code>{{ ", " if not loop.last }}{% endfor %}, or <code>POLICY:&lt;id&gt;</code> for a rule of your compliance policy
+  (<code>*</code> is a wildcard: <code>POLICY:*</code> is every policy rule). A control is met for a firewall when none of its checks has an active finding.</p>
+  <textarea name="custom_frameworks" rows="10" maxlength="20000" spellcheck="false" aria-label="Custom frameworks" placeholder="[Internal baseline]&#10;NET-1 | No any-to-any rule | ANY_ANY&#10;NET-2 | Housekeeping | SHADOWED, REDUNDANT, UNUSED&#10;NET-3 | Company policy | POLICY:*">{{ custom_text }}</textarea>
+  <div class="form-actions"><button class="btn">Save the frameworks</button></div>
+</form>{% endif %}
+{% endblock %}

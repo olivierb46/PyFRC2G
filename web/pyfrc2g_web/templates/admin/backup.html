@@ -7,6 +7,11 @@
 <form class="card" method="post">{{ csrf() }}<input type="hidden" name="action" value="download">
   <h2>Download an encrypted backup</h2>
   <p class="help">A consistent snapshot of the database (users, firewalls, analyses, reports, settings), encrypted with the passphrase you choose now. <b>To restore it you need this passphrase and the application key <code>PYFRC2G_SECRET_KEY</code></b> (the content is encrypted with it too): <code>pyfrc2g-web --restore-backup FILE --data-dir DIR</code> with the application stopped. The passphrase is not stored.</p>
+  {% if sso %}<p class="help">This account signs in through the identity provider: sign in again just before downloading (the sign-in must be less than 15 minutes old).</p>
+  {% else %}<div class="grid cols-2">
+    <div><label for="current">Your password</label><input type="password" id="current" name="current" autocomplete="current-password" required></div>
+    {% if mfa %}<div><label for="code">Code of your authenticator app</label><input type="text" id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required></div>{% endif %}
+  </div>{% endif %}
   <div class="grid cols-2">
     <div><label for="passphrase">Passphrase</label><input type="password" id="passphrase" name="passphrase" minlength="{{ min_length }}" required autocomplete="new-password"><div class="help">At least {{ min_length }} characters.</div></div>
     <div><label for="confirm">Confirm</label><input type="password" id="confirm" name="confirm" required autocomplete="new-password"></div>

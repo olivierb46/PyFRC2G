@@ -131,7 +131,8 @@ ENCRYPTED_COLUMNS = (("meta", "value_enc"), ("firewalls", "config_enc"), ("setti
                      ("gateways", "options_enc"), ("runs", "log_enc"), ("analyses", "data_enc"),
                      ("artifacts", "content_enc"), ("ciso_uploads", "message_enc"), ("exceptions", "reason_enc"),
                      ("notification_channels", "target_enc"), ("notification_channels", "secret_enc"),
-                     ("report_schedules", "recipients_enc"))
+                     ("report_schedules", "recipients_enc"), ("rule_notes", "comment_enc"),
+                     ("users", "totp_secret_enc"), ("users", "recovery_enc"))
 
 
 def _is_current(cipher, token):

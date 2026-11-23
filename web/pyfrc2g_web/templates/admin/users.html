@@ -7,7 +7,7 @@
 <div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Firewalls</th><th>Sessions</th><th>Last sign-in</th><th>Change role</th><th>Reset password</th><th></th></tr></thead><tbody>
 {% for u in users %}<tr>
 <td><b>{{ u.username }}</b>{% if u.id == g.user.id %} <span class="badge info">you</span>{% endif %}</td>
-<td>{{ badge(u.role) }}</td>
+<td>{{ badge(u.role) }}{% if u.totp_enabled %} <span class="badge info" title="Two-factor authentication on">MFA</span>{% endif %}</td>
 <td>{% if u.role == 'admin' %}<span class="muted">all</span>{% else %}
   <form class="inline-row" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}">{{ csrf() }}<input type="hidden" name="action" value="scope">
   <input type="text" class="w-wide" name="scope" value="{{ u.scope_view }}" placeholder="all  (or  site: Paris; tag: prod; fw: fw1)" aria-label="Firewall scope of {{ u.username }}" maxlength="500"> <button class="btn small secondary">Set</button></form>{% endif %}</td>
@@ -16,7 +16,7 @@
   <select name="role" aria-label="Role">{% for r in roles %}<option value="{{ r }}" {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select> <button class="btn small secondary">Apply</button></form></td>
 <td><form class="inline-row" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}">{{ csrf() }}<input type="hidden" name="action" value="password">
   <input type="password" name="password" minlength="10" placeholder="new password" aria-label="New password" autocomplete="new-password" required> <button class="btn small secondary">Set</button></form></td>
-<td>{% if u.id != g.user.id %}<form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}" data-confirm="Delete the user {{ u.username }}?">{{ csrf() }}<input type="hidden" name="action" value="delete"><button class="btn small danger">Delete</button></form>{% endif %}</td>
+<td class="nowrap">{% if u.totp_enabled and u.id != g.user.id %}<form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}" data-confirm="Turn off the two-factor authentication of {{ u.username }}?">{{ csrf() }}<input type="hidden" name="action" value="mfa_reset"><button class="btn small secondary">Reset MFA</button></form> {% endif %}{% if u.id != g.user.id %}<form class="inline" method="post" action="{{ url_for('admin.update_user', user_id=u.id) }}" data-confirm="Delete the user {{ u.username }}?">{{ csrf() }}<input type="hidden" name="action" value="delete"><button class="btn small danger">Delete</button></form>{% endif %}</td>
 </tr>{% endfor %}</tbody></table></div>
 <form class="card section" method="post">{{ csrf() }}
   <h2>New user</h2>

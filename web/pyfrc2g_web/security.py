@@ -11,7 +11,7 @@ import secrets
 import threading
 import time
 
-from flask import abort, current_app, g, redirect, request, session, url_for
+from flask import abort, current_app, flash, g, redirect, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Roles, from the most to the least privileged (the first matching role wins for SSO users).
@@ -135,6 +135,15 @@ def login_user(user):
                                current_app.config.get("MAX_SESSIONS", 0))
 
 
+def _max_age(user):
+    """Absolute life of a session. A single sign-on session is shorter: the user has to go back to the identity
+    provider every PYFRC2G_OIDC_REVALIDATE_MINUTES, so that a revoked account or a changed group is noticed."""
+    lifetime = current_app.config["PERMANENT_SESSION_LIFETIME"].total_seconds()
+    if user["password_hash"] == "!oidc":
+        return min(lifetime, current_app.config.get("OIDC_REVALIDATE_MINUTES", 60) * 60)
+    return lifetime
+
+
 def load_user():
     """before_request: g.user from the session (None if signed out or password changed)."""
     g.user = None
@@ -143,12 +152,33 @@ def load_user():
     if uid is None:
         return
     user = current_app.db.user(user_id=uid)
-    if (user is None or session.get("pw") != _password_marker(user["password_hash"])
-            or user["role"] not in ROLES or not current_app.db.session_alive(session.get("tok") or "")):
+    if (user is None or session.get("pw") != _password_marker(user["password_hash"]) or user["role"] not in ROLES
+            or not current_app.db.session_alive(session.get("tok") or "", max_age=_max_age(user))):
         session.clear()  # Password changed, user deleted, or session revoked.
         return
     g.user = user
     g.session_token = session["tok"]
+
+
+_ALLOWED_DURING_SETUP = frozenset({"main.account", "main.account_mfa", "main.logout", "main.health", "static",
+                                  "main.metrics"})
+
+
+def require_password_change():
+    """before_request: a user who must choose a password or enrol the second factor only reaches the account page."""
+    user = g.get("user")
+    if not user or request.endpoint in _ALLOWED_DURING_SETUP:
+        return None
+    if user.get("must_change"):
+        flash("Choose a new password before going further.", "error")
+        return redirect(url_for("main.account"))
+    from pyfrc2g_web import mfa
+    from pyfrc2g_web.oidc import is_sso_user
+
+    if not user.get("totp_enabled") and not is_sso_user(user) and mfa.required_for(user):
+        flash("This server requires two-factor authentication: set it up before going further.", "error")
+        return redirect(url_for("main.account"))
+    return None
 
 
 def csrf_token():
@@ -160,7 +190,7 @@ def csrf_token():
 
 def check_csrf():
     """before_request: every POST must carry the session CSRF token."""
-    if request.method != "POST":
+    if request.method != "POST" or request.path.startswith("/api/"):  # The API uses bearer tokens, not cookies.
         return
     sent = request.form.get("csrf", "")
     expected = session.get("csrf", "")
@@ -201,9 +231,15 @@ def admin_required(view):
 
 
 def safe_next(target):
-    """Only local paths are accepted as redirect target after sign-in."""
-    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
-        return target
+    """Only local paths are accepted as redirect target after sign-in (no scheme, host or control character)."""
+    from urllib.parse import unquote, urlsplit
+
+    if target and len(target) <= 500 and target.startswith("/") and not target.startswith("//"):
+        decoded = unquote(target)
+        parts = urlsplit(target)
+        if (not any(ord(ch) < 32 or ord(ch) == 127 for ch in target + decoded) and "\\" not in decoded
+                and not decoded.startswith("//") and not parts.scheme and not parts.netloc):
+            return target
     return url_for("main.dashboard")
 
 
@@ -221,6 +257,12 @@ def security_headers(response):
     return response
 
 
+_DUMMY_HASH = generate_password_hash("not-a-real-password")
+
+
 def check_password(user, password):
-    """True if the user exists and the password matches its hash."""
-    return user is not None and check_password_hash(user["password_hash"], password or "")
+    """True if the user exists and the password matches its hash (same work for an unknown user)."""
+    if user is None:
+        check_password_hash(_DUMMY_HASH, password or "")  # Do not tell by the response time that the name is unknown.
+        return False
+    return check_password_hash(user["password_hash"], password or "")

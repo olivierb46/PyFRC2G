@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge %}
+{% block title %}Flow search{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Flow search</h1>
+<div class="sub">Can A reach B? The rules of each interface are read in order: the first rule covering the whole flow decides.</div></div></div>
+<form class="card" method="get">
+  <div class="grid cols-3">
+    <div><label for="f-fw">Firewall</label><select id="f-fw" name="firewall"><option value="">All the firewalls you can see</option>{% for gw in gateways %}<option {{ 'selected' if gw.name == form.firewall }}>{{ gw.name }}</option>{% endfor %}</select></div>
+    <div><label for="f-src">Source</label><input type="text" id="f-src" name="source" value="{{ form.source }}" placeholder="10.0.0.5, 10.0.0.0/24 or an alias" maxlength="200" required></div>
+    <div><label for="f-dst">Destination</label><input type="text" id="f-dst" name="destination" value="{{ form.destination }}" placeholder="192.168.1.10 or an alias" maxlength="200" required></div>
+    <div><label for="f-proto">Protocol</label><select id="f-proto" name="protocol">{% for p in protocols %}<option value="{{ p }}" {{ 'selected' if p == (form.protocol or 'any') }}>{{ p }}</option>{% endfor %}</select></div>
+    <div><label for="f-port">Port</label><input type="text" id="f-port" name="port" value="{{ form.port }}" placeholder="443, 8000-8100 (empty = any)" maxlength="200"></div>
+  </div>
+  <div class="form-actions"><button class="btn">Search</button></div>
+  <div class="help">The result comes from the stored rules and alias tables; NAT, routing and the actual traffic are not simulated. A rule using an FQDN, a URL table or another alias that cannot be resolved is listed as uncertain, never as a match.</div>
+</form>
+{% if error %}<div class="flash error section">{{ error }}</div>{% endif %}
+{% for res in results %}
+<div class="card section"><h2><a class="plain" href="{{ url_for('main.gateway', name=res.gateway.name) }}">{{ res.gateway.name }}</a></h2>
+  {% if res.warning %}<div class="flash error">{{ res.warning }}</div>{% endif %}
+  {% if res.results %}<div class="table-wrap"><table><thead><tr><th>Interface</th><th>Verdict</th><th>Deciding rule</th><th>Earlier rules that may also apply</th></tr></thead><tbody>
+  {% for r in res.results %}<tr>
+    <td><b>{{ r.interface }}</b>{% if r.likely %} <span class="badge info" title="The source belongs to this interface network">likely entry</span>{% endif %}</td>
+    <td>{% if r.verdict == "none" %}<span class="muted">no matching rule (default deny)</span>{% else %}{{ badge(r.verdict|upper, r.verdict) }}{% endif %}</td>
+    <td class="small">{% if r.rule %}#{{ r.rule.order }} {{ r.rule.source }} → {{ r.rule.destination }} {{ r.rule.protocol }} {{ r.rule.port }}{% if r.rule.comment %}<div class="muted">{{ r.rule.comment }}</div>{% endif %}{% else %}—{% endif %}</td>
+    <td class="small">{% for p in r.partial %}<div>#{{ p.order }} {{ p.action }} · {{ p.source }} → {{ p.destination }} {{ p.protocol }} {{ p.port }}</div>{% else %}—{% endfor %}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="muted">No rule.</p>{% endif %}
+</div>
+{% endfor %}
+{% if form.source and not results and not error %}<div class="card empty section">No analysed firewall to search.</div>{% endif %}
+{% endblock %}

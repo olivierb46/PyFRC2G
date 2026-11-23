@@ -28,6 +28,35 @@
     apply();
   });
 
+  // <input type="checkbox" data-check-all="table-id">: tick or untick the visible row checkboxes of a table.
+  document.querySelectorAll("input[data-check-all]").forEach(function (box) {
+    box.addEventListener("change", function () {
+      var table = document.getElementById(box.dataset.checkAll);
+      if (!table) return;
+      table.querySelectorAll("tbody tr:not([hidden]) input[type=checkbox]").forEach(function (cb) { cb.checked = box.checked; });
+    });
+  });
+
+  // Sidebar groups: collapsible, remembered. A group is open while it holds the current page; otherwise it
+  // starts collapsed (so that the whole menu fits) until the user opens it.
+  document.querySelectorAll(".nav-group").forEach(function (group) {
+    var button = group.querySelector(".nav-title");
+    var key = "pyfrc2g.nav." + group.dataset.key;
+    var active = group.classList.contains("has-active");
+    function set(collapsed) {
+      group.classList.toggle("collapsed", collapsed);
+      button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+    var stored = null;
+    try { stored = window.localStorage.getItem(key); } catch (e) { /* storage blocked */ }
+    set(!active && stored !== "open");
+    button.addEventListener("click", function () {
+      var collapsed = !group.classList.contains("collapsed");
+      set(collapsed);
+      try { window.localStorage.setItem(key, collapsed ? "closed" : "open"); } catch (e) { /* ignore */ }
+    });
+  });
+
   // <form data-confirm="message">: ask before destructive actions.
   document.querySelectorAll("form[data-confirm]").forEach(function (form) {
     form.addEventListener("submit", function (event) {

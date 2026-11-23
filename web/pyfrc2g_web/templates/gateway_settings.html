@@ -66,6 +66,9 @@
     <div><label for="tags">Tags</label><input type="text" id="tags" name="tags" value="{{ (o.tags or [])|join(', ') }}" placeholder="prod, dmz"></div>
   </div>
   <label for="description">Description</label><input type="text" id="description" name="description" maxlength="200" value="{{ o.description or '' }}">
+  <label for="change_windows">Maintenance windows</label>
+  <textarea id="change_windows" name="change_windows" rows="3" maxlength="1000" spellcheck="false" placeholder="mon-fri 22:00-06:00&#10;sat,sun 00:00-24:00">{{ o.change_windows or '' }}</textarea>
+  <div class="help">When changes are expected, one window per line (server time). A change detected outside raises the <i>Change outside the maintenance window</i> alert. Empty = the global windows (Administration &gt; Settings).</div>
 </div>
 
 <div class="form-actions">

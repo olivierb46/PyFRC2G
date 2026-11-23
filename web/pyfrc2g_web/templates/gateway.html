@@ -14,6 +14,8 @@
       {% if analysis and analyses and analysis.id != analyses[0].id %}<span class="badge MEDIUM">older analysis</span>{% endif %}</div>
   </div>
   <div class="actions">
+    {% if data %}<a class="btn secondary" href="{{ url_for('main.review_rules', name=gw.name) }}">Rule review</a>
+    <a class="btn secondary" href="{{ url_for('main.cleanup_plan', name=gw.name) }}">Cleanup plan</a>{% endif %}
     {% if can('analyse') or can('manage') %}
       {% if gw.kind == 'api' and gw.firewall_id and can('analyse') %}<form class="inline" method="post" action="{{ url_for('main.analyse') }}">{{ csrf() }}
         <input type="hidden" name="firewall_id" value="{{ gw.firewall_id }}"><input type="hidden" name="force" value="1"><button class="btn">Analyse now</button></form>{% endif %}

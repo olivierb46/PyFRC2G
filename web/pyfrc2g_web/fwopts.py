@@ -26,6 +26,7 @@ DEFAULTS = {
     "ciso_evidence_id": "", "ciso_folder_id": "", "ciso_changes_evidence_id": "", "ciso_auto": "default",
     "view": "all", "nfsensei_config": "running", "raster": False, "excel": True, "svg": True,
     "description": "", "site": "", "owner": "", "tags": [],
+    "change_windows": "",  # Maintenance windows (see windows.py); empty = the global ones.
 }
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _IFACE = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
@@ -144,6 +145,13 @@ def parse_form(form, old, errors, backup=False):
     changes_evidence = form.get("ciso_changes_evidence_id", "").strip()
     if changes_evidence and not _ID.match(changes_evidence):
         errors.append("CISO Assistant change report evidence id: letters, digits, '-', '_', '.' or ':' only.")
+    change_windows = form.get("change_windows", "").strip()[:1000]
+    try:
+        from pyfrc2g_web import windows
+
+        windows.parse(change_windows)
+    except ValueError as e:
+        errors.append(f"Maintenance windows: {e}")
     tags = list(dict.fromkeys(split_list(form.get("tags", ""))))
     if any(not _TAG.match(t) for t in tags):
         errors.append("Tags: letters, digits, spaces, '.', ':', '_' or '-' (32 characters max).")
@@ -171,6 +179,7 @@ def parse_form(form, old, errors, backup=False):
         description=form.get("description", "").strip()[:200],
         site=form.get("site", "").strip()[:64],
         owner=form.get("owner", "").strip()[:64],
+        change_windows=change_windows,
         tags=tags,
     )
     if backup:

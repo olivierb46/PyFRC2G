@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf %}
+{% block title %}API tokens{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>API tokens</h1>
+<div class="sub">Personal tokens of the REST API (<code>/api/v1/</code>). A token acts as its owner, with their role and firewalls. Everyone creates their own on the My account page; revoke any of them here.</div></div></div>
+{% if tokens %}
+<div class="table-wrap"><table><thead><tr><th>Owner</th><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead><tbody>
+{% for t in tokens %}<tr><td><b>{{ t.username or "?" }}</b></td><td>{{ t.name }}</td><td class="mono">{{ t.prefix }}…</td><td class="nowrap muted">{{ t.created }}</td><td class="nowrap muted">{{ t.last_used or "never" }}</td><td class="nowrap">{{ t.expires or "never" }}</td>
+<td><form class="inline" method="post" data-confirm="Revoke the token {{ t.name }} of {{ t.username }}?">{{ csrf() }}<input type="hidden" name="token_id" value="{{ t.id }}"><button class="btn small danger">Revoke</button></form></td></tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty">No token.</div>{% endif %}
+{% endblock %}

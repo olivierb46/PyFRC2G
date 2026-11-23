@@ -26,6 +26,7 @@ validated, subjects are cleaned); the content of the alerts is *minimal* (counts
 asks for the details; everything sent or failed is written to the event log (without the URL).
 """
 
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -54,11 +55,11 @@ LOG = logging.getLogger("pyfrc2g.notify")
 KINDS = (("email", "Email"), ("webhook", "Webhook (signed JSON)"), ("slack", "Slack"), ("teams", "Microsoft Teams"))
 EVENTS = (("critical", "New critical finding"), ("high", "New high finding"),
           ("drift", "Risk score rise"), ("permissive", "New permissive rule (any)"),
-          ("failed", "Analysis failed"))
+          ("failed", "Analysis failed"), ("stale", "Analysis too old"),
+          ("window", "Change outside the maintenance window"))
 SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 SLACK_HOSTS = ("hooks.slack.com",)
 TEAMS_SUFFIXES = (".webhook.office.com", ".logic.azure.com", ".powerplatform.com", ".office.com")
-FREQUENCIES = (("daily", "Every day"), ("weekly", "Every week"), ("monthly", "Every month"))
 MAX_FINDINGS = 10
 MAX_RECIPIENTS = 20
 _EMAIL = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
@@ -267,6 +268,8 @@ def alert_text(alert, detail, base_url=""):
     if alert.get("score_after") is not None:
         before = "?" if alert.get("score_before") is None else alert["score_before"]
         lines.append(f"Risk score: {before} -> {alert['score_after']}")
+    if alert.get("note"):
+        lines.append(clean(alert["note"], 120))
     counts = alert.get("counts") or {}
     if counts:
         lines.append(f"New findings: {counts.get('critical', 0)} critical, {counts.get('high', 0)} high, "
@@ -391,11 +394,6 @@ class Notifier:
                     time.sleep(pause * 2 ** attempt)
         return False
 
-    def drain(self, pause=0.0):
-        """Process the queued messages in the calling thread (used by tests)."""
-        while not self.queue.empty():
-            self.process(self.queue.get_nowait(), pause)
-
     def _worker(self):
         while True:
             try:
@@ -429,6 +427,62 @@ class Notifier:
         return self.alert(alert, labels)
 
 
+def check_stale(db, now=None):
+    """Alert once per firewall whose last analysis is older than the threshold. Return the alerts queued.
+
+    Only API firewalls count: a configuration file is analysed when somebody uploads it.
+    """
+    from pyfrc2g_web import access
+    from pyfrc2g_web.metrics import timestamp
+
+    notifier = getattr(db, "notifier", None)
+    hours = int(db.settings().get("notify_stale_hours") or 0)
+    if notifier is None or hours <= 0:
+        return 0
+    now = now or time.time()
+    enabled = {f["id"] for f in db.firewalls() if f["enabled"]}
+    sent = 0
+    for gw in access.labelled_gateways(db):
+        when = timestamp(gw.get("updated"))
+        if gw["firewall_id"] not in enabled or when is None or now - when < hours * 3600:
+            continue
+        key = f"stale:{gw['name']}"
+        if db.get_meta(key) == gw["updated"]:
+            continue  # Already announced for this last analysis; a new analysis re-arms it.
+        db.set_meta(key, gw["updated"])
+        age = int((now - when) // 3600)
+        db.add_event("system", "analysis stale", f"{gw['name']}: last analysis {gw['updated']} ({age} h)")
+        alert = {"firewall": gw["name"], "events": ["stale"], "score_before": None, "score_after": gw.get("score"),
+                 "counts": {}, "note": f"Last analysis: {gw['updated']} ({age} h ago)", "findings": []}
+        sent += notifier.alert(alert, {"site": gw["site"], "tags": gw["tags"]})
+    return sent
+
+
+def check_window(db, host, data, text, labels=None, moment=None):
+    """Alert when the analysis found rule changes outside the maintenance windows. Return the channels reached."""
+    from pyfrc2g_web import windows
+
+    changes = data.get("changes") or []
+    if not changes or not (text or "").strip():
+        return 0
+    try:
+        allowed = windows.parse(text)
+    except windows.WindowError:
+        return 0
+    if windows.contains(allowed, moment or datetime.now()):
+        return 0
+    db.add_event("system", "change outside window", f"{host}: {len(changes)} rule change(s)")
+    notifier = getattr(db, "notifier", None)
+    if notifier is None:
+        return 0
+    findings = [{"severity": c.get("CHANGE", ""), "check": "", "rule": rule_key(c), "detail": c.get("DETAIL", "")}
+                for c in changes[:MAX_FINDINGS]]
+    alert = {"firewall": host, "events": ["window"], "score_before": None,
+             "score_after": (data.get("risk") or {}).get("score"), "counts": {},
+             "note": f"{len(changes)} rule change(s) detected outside the maintenance window", "findings": findings}
+    return notifier.alert(alert, labels)
+
+
 def analysis_alert(db, previous, data, host, labels=None):
     """Queue the alerts after the runner stored an analysis. Return the channel count; never raises."""
     notifier = getattr(db, "notifier", None)
@@ -453,30 +507,126 @@ def test_message(notifier, channel):
 # Scheduled reports
 # ---------------------------------------------------------------------------
 
-def _matches(schedule, day):
-    if schedule["frequency"] == "weekly":
-        return day.weekday() == schedule["weekday"]
-    if schedule["frequency"] == "monthly":
-        return day.day == schedule["monthday"]
-    return True
+_MONTH_NAMES = {n: i for i, n in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                              "nov", "dec"), 1)}
+_DAY_NAMES = {n: i for i, n in enumerate(("sun", "mon", "tue", "wed", "thu", "fri", "sat"))}
+_MACROS = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@midnight": "0 0 * * *", "@weekly": "0 0 * * 0",
+           "@monthly": "0 0 1 * *", "@yearly": "0 0 1 1 *", "@annually": "0 0 1 1 *"}
+CRON_EXAMPLES = (("0 7 * * *", "Every day at 07:00"), ("0 7 * * 1", "Every Monday at 07:00"),
+                 ("0 7 * * 1-5", "Weekdays at 07:00"), ("0 8 1 * *", "The 1st of each month at 08:00"),
+                 ("30 6 1,15 * *", "The 1st and the 15th at 06:30"), ("0 7 */2 * *", "Every other day at 07:00"))
+MIN_INTERVAL = 3600  # A report is at most hourly.
 
 
-def last_slot(schedule, moment):
-    """Return the most recent scheduled instant not after `moment` (None if none in the last 62 days)."""
-    for back in range(62):
+def _cron_field(text, low, high, names=None):
+    """Set of the values of one cron field: lists, ranges, steps (*/5, 1-10/2) and month / day names."""
+    def number(item):
+        item = item.lower()
+        if names and item in names:
+            return names[item]
+        if not (item.isascii() and item.isdigit()):
+            raise NotifyError(f"Schedule: {item!r} is not a valid value.")
+        return int(item)
+
+    values = set()
+    for part in text.split(","):
+        part, slash, step_text = part.partition("/")
+        step = number(step_text) if slash else 1
+        if step < 1:
+            raise NotifyError("Schedule: a step must be at least 1.")
+        if part == "*":
+            start, end = low, high
+        elif "-" in part:
+            first, last = part.split("-", 1)
+            start, end = number(first), number(last)
+        else:
+            start = number(part)
+            end = high if slash else start
+        if not low <= start <= end <= high:
+            raise NotifyError(f"Schedule: {part!r} is out of range ({low}-{high}).")
+        values.update(range(start, end + 1, step))
+    return values
+
+
+@functools.lru_cache(maxsize=64)
+def parse_cron(text):
+    """Parse a 5-field cron expression (minute hour day-of-month month day-of-week) or an @macro.
+
+    Returns a dict of value sets; raises NotifyError. Day of week: 0 or 7 = Sunday.
+    """
+    text = _MACROS.get((text or "").strip().lower(), (text or "").strip().lower())
+    fields = text.split()
+    if len(fields) != 5 or len(text) > 100:
+        raise NotifyError("Schedule: five fields are expected (minute hour day-of-month month day-of-week), "
+                          "e.g. 0 7 * * 1.")
+    minute, hour, dom, month, dow = fields
+    days = {d % 7 for d in _cron_field(dow, 0, 7, _DAY_NAMES)}
+    return {"minutes": sorted(_cron_field(minute, 0, 59)), "hours": sorted(_cron_field(hour, 0, 23)),
+            "doms": _cron_field(dom, 1, 31), "months": _cron_field(month, 1, 12, _MONTH_NAMES), "dows": days,
+            # As in cron: when both day fields are restricted, a day matches if either one does.
+            "dom_any": dom.startswith("*"), "dow_any": dow.startswith("*")}
+
+
+def _day_matches(cron, day):
+    if day.month not in cron["months"]:
+        return False
+    dom_ok, dow_ok = day.day in cron["doms"], day.isoweekday() % 7 in cron["dows"]
+    return (dom_ok and dow_ok) if cron["dom_any"] or cron["dow_any"] else (dom_ok or dow_ok)
+
+
+def last_slot(text, moment):
+    """The most recent instant matching the cron expression, not after `moment` (None if none within 4 years)."""
+    cron = parse_cron(text)
+    for back in range(366 * 4 + 1):
         day = moment.date() - timedelta(days=back)
-        if _matches(schedule, day):
-            slot = datetime.combine(day, dtime(schedule["hour"]))
-            if slot <= moment:
-                return slot
+        if _day_matches(cron, day):
+            for hour in reversed(cron["hours"]):
+                for minute in reversed(cron["minutes"]):
+                    slot = datetime.combine(day, dtime(hour, minute))
+                    if slot <= moment:
+                        return slot
     return None
 
 
+def next_slot(text, moment):
+    """The first instant matching the cron expression, after `moment` (None if none within 4 years)."""
+    cron = parse_cron(text)
+    for ahead in range(366 * 4 + 1):
+        day = moment.date() + timedelta(days=ahead)
+        if _day_matches(cron, day):
+            for hour in cron["hours"]:
+                for minute in cron["minutes"]:
+                    slot = datetime.combine(day, dtime(hour, minute))
+                    if slot > moment:
+                        return slot
+    return None
+
+
+def check_cron(text, moment=None):
+    """Validate a schedule entered by the administrator and return it cleaned. Raises NotifyError."""
+    text = (text or "").strip()
+    parse_cron(text)
+    slot, gaps = next_slot(text, moment or datetime.now()), []
+    for _ in range(6):
+        following = slot and next_slot(text, slot)
+        if not following:
+            break
+        gaps.append((following - slot).total_seconds())
+        slot = following
+    if slot is None:
+        raise NotifyError("Schedule: this expression never matches a date.")
+    if gaps and min(gaps) < MIN_INTERVAL:
+        raise NotifyError("Schedule: a report is sent at most once an hour.")
+    return text
+
+
 def is_due(schedule, moment=None):
-    """Return True when the schedule is enabled and its latest slot has not been sent yet."""
+    """True when a scheduled slot has passed since the report was last sent."""
     moment = moment or datetime.now()
-    slot = last_slot(schedule, moment)
-    if slot is None or not schedule["enabled"]:
+    if not schedule["enabled"] or not schedule.get("cron"):
+        return False
+    slot = last_slot(schedule["cron"], moment)
+    if slot is None:
         return False
     try:
         last = datetime.strptime(schedule["last_sent"], "%Y-%m-%d %H:%M:%S")
@@ -485,14 +635,78 @@ def is_due(schedule, moment=None):
     return last < slot
 
 
-def describe_schedule(schedule):
-    when = f"{schedule['hour']:02d}:00"
-    if schedule["frequency"] == "weekly":
-        days = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-        return f"every {days[schedule['weekday']]} at {when}"
-    if schedule["frequency"] == "monthly":
-        return f"on day {schedule['monthday']} of each month at {when}"
-    return f"every day at {when}"
+def describe_schedule(schedule, moment=None):
+    """Next run of a schedule, e.g. '2026-11-30 07:00' (or '-' when disabled or invalid)."""
+    try:
+        slot = next_slot(schedule["cron"], moment or datetime.now()) if schedule["enabled"] else None
+    except (NotifyError, KeyError, TypeError):
+        slot = None
+    return slot.strftime("%Y-%m-%d %H:%M") if slot else "-"
+
+
+def _score_on(history, day):
+    """Score of the last analysis made on or before `day` ('YYYY-MM-DD'), else of the oldest one."""
+    earlier = [h["score"] for h in history if h["date"][:10] <= day]
+    return earlier[-1] if earlier else (history[0]["score"] if history else None)
+
+
+def digest_lines(db, gateways, today=None, days=7):
+    """Return the lines of the summary e-mail: score changes, stale firewalls, expiring risks, rules to review."""
+    from pyfrc2g_web import exceptions, review
+    from pyfrc2g_web.metrics import timestamp
+
+    today = today or date.today()
+    since = (today - timedelta(days=days)).isoformat()
+    scored = [gw for gw in gateways if gw.get("score") is not None]
+    lines = [f"Firewalls: {len(gateways)}, average risk score "
+             f"{round(sum(gw['score'] for gw in scored) / len(scored)) if scored else '-'}, "
+             f"{sum(gw.get('critical') or 0 for gw in gateways)} critical finding(s)", ""]
+    moves = []
+    for gw in scored:
+        before = _score_on(db.score_history(gw["id"], 60), since)
+        if before is not None and gw["score"] != before:
+            moves.append((gw["score"] - before, gw))
+    worse = sorted((m for m in moves if m[0] > 0), key=lambda m: -m[0])[:10]
+    better = sorted((m for m in moves if m[0] < 0), key=lambda m: m[0])[:5]
+    for title, items in ((f"Risk score up over {days} days", worse), (f"Risk score down over {days} days", better)):
+        if items:
+            lines.append(title + ":")
+            lines += [f"  {clean(gw['name'], 60)}: {gw['score']} ({delta:+d}), {gw.get('critical') or 0} critical"
+                      for delta, gw in items]
+            lines.append("")
+    hours = int(db.settings().get("notify_stale_hours") or 0)
+    if hours:
+        enabled = {f["id"] for f in db.firewalls() if f["enabled"]}
+        stale = [gw for gw in gateways if gw["firewall_id"] in enabled and timestamp(gw.get("updated"))
+                 and time.time() - timestamp(gw["updated"]) > hours * 3600]
+        if stale:
+            lines.append(f"Not analysed for more than {hours} h:")
+            lines += [f"  {clean(gw['name'], 60)} (last analysis {gw['updated']})" for gw in stale[:10]]
+            lines.append("")
+    soon = exceptions.expiring(db.exceptions(), 14, today)
+    if soon:
+        lines.append("Accepted risks expiring within 14 days:")
+        lines += [f"  {clean(e['check_name'], 40)} on {clean(e.get('gateway') or 'all firewalls', 40)}: "
+                  f"{e['expires']} ({left} day(s))" for e, left in soon[:10]]
+        lines.append("")
+    months = int(db.settings().get("review_months") or 0)
+    if months:
+        due = []
+        for gw in gateways:
+            analyses = db.analyses(gw["id"])
+            if analyses:
+                stats = review.counts(review.rows(db.analysis(analyses[0]["id"])["data"],
+                                                  db.rule_notes(gw["name"]), months, today))
+                if stats["never"] + stats["overdue"]:
+                    due.append((gw["name"], stats["overdue"], stats["never"]))
+        if due:
+            lines.append(f"Rules to review (every {months} months):")
+            lines += [f"  {clean(name, 60)}: {overdue} overdue, {never} never reviewed"
+                      for name, overdue, never in due[:10]]
+            lines.append("")
+    if len(lines) <= 2:
+        lines.append("Nothing to report this week.")
+    return lines[:80]
 
 
 def report_job(db, schedule, cfg, today=None):
@@ -506,8 +720,13 @@ def report_job(db, schedule, cfg, today=None):
         gateways = [gw for gw in gateways if schedule["tag"] in gw["tags"]]
     scope = " · ".join(p for p in (f"site {schedule['site']}" if schedule["site"] else "",
                                    f"tag {schedule['tag']}" if schedule["tag"] else "") if p) or "all firewalls"
-    content, mime = exports.build(schedule["format"], exports.collect(db, gateways), scope)
     today = today or date.today()
+    if schedule["format"] == "digest":  # Summary in the body of the e-mail, no attachment.
+        lines = [f"Summary: {clean(schedule['name'], 80)} ({clean(scope, 80)})", ""] + digest_lines(db, gateways, today)
+        if cfg["base_url"]:
+            lines.append(cfg["base_url"])
+        return {"subject": clean(f"[PyFRC2G] Summary {schedule['name']} - {today:%Y-%m-%d}", 150), "lines": lines}
+    content, mime = exports.build(schedule["format"], exports.collect(db, gateways), scope)
     name = f"pyfrc2g-report-{today:%Y%m%d}.{schedule['format']}"
     lines = [f"Scheduled report: {clean(schedule['name'], 80)}", f"Scope: {clean(scope, 80)}",
              f"Firewalls: {len(gateways)}"]

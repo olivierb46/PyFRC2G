@@ -3,6 +3,7 @@
 {% block title %}My account{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>My account</h1><div class="sub">{{ g.user.username }} · {{ g.user.role }} · {{ scope_text }} · last sign-in {{ g.user.last_login or "—" }}</div></div></div>
+{% if g.user.must_change %}<div class="flash error">You must choose a new password before using the application.</div>{% endif %}
 {% if sso %}<div class="card"><h2>Password</h2><p>This account is managed by your identity provider (SSO): there is no local password.</p></div>{% else %}<form class="card" method="post">{{ csrf() }}
   <h2>Change my password</h2>
   <label for="current">Current password</label><input type="password" id="current" name="current" autocomplete="current-password" required>
@@ -11,4 +12,56 @@
   <label for="confirm">Confirm</label><input type="password" id="confirm" name="confirm" autocomplete="new-password" required>
   <div class="form-actions"><button class="btn">Change password</button></div>
 </form>{% endif %}
+{% if not sso %}
+<div class="card section"><h2>Two-factor authentication {% if mfa_enabled %}<span class="badge ok">on</span>{% else %}<span class="badge">off</span>{% endif %}</h2>
+  {% if recovery_codes %}
+  <div class="flash ok"><b>Recovery codes: keep them somewhere safe, each works once and they will not be shown again.</b>
+    <div class="grid cols-4 mt">{% for c in recovery_codes %}<code class="mono">{{ c }}</code>{% endfor %}</div></div>
+  {% endif %}
+  {% if mfa_setup %}
+  <p>1. Scan this code with your authenticator app (Aegis, FreeOTP, Google or Microsoft Authenticator, Bitwarden, 1Password…).</p>
+  {% if mfa_setup.svg %}<div class="qr">{{ mfa_setup.svg|safe }}</div>{% else %}<p class="muted">The QR code is not available on this server: add the key by hand.</p>{% endif %}
+  <p class="help">Or enter this key by hand (time-based, 6 digits, 30 seconds): <code class="mono">{{ mfa_setup.secret }}</code></p>
+  <form method="post" action="{{ url_for('main.account_mfa') }}">{{ csrf() }}<input type="hidden" name="action" value="confirm">
+    <label for="mfa_code">2. Type the code shown by the app</label>
+    <input type="text" id="mfa_code" name="code" class="w-sm" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required autofocus>
+    <div class="form-actions"><button class="btn">Turn on</button>
+      <button class="btn secondary" name="action" value="cancel" formnovalidate>Cancel</button></div>
+  </form>
+  {% elif mfa_enabled %}
+  <p>At sign-in, your password is followed by a code from your authenticator app. {{ mfa_left }} recovery code(s) left.</p>
+  <form method="post" action="{{ url_for('main.account_mfa') }}">{{ csrf() }}
+    <div class="grid cols-2">
+      <div><label for="mfa_pw">Current password</label><input type="password" id="mfa_pw" name="current" autocomplete="current-password" required></div>
+      <div><label for="mfa_off">Code (or a recovery code)</label><input type="text" id="mfa_off" name="code" autocomplete="one-time-code" maxlength="20" required></div>
+    </div>
+    <div class="form-actions"><button class="btn secondary" name="action" value="regenerate">New recovery codes</button>
+      {% if not mfa_required %}<button class="btn danger" name="action" value="disable">Turn off</button>{% endif %}</div>
+    {% if mfa_required %}<div class="help">The policy of this server requires two-factor authentication: it cannot be turned off.</div>{% endif %}
+  </form>
+  {% else %}
+  <p>Protect your account with a code from an authenticator app, in addition to your password.
+  {% if mfa_required %}<b>This server requires it.</b>{% endif %}</p>
+  <form method="post" action="{{ url_for('main.account_mfa') }}">{{ csrf() }}<input type="hidden" name="action" value="begin">
+    <div class="form-actions"><button class="btn">Set up</button></div></form>
+  {% endif %}
+</div>
+{% endif %}
+<div class="card section"><h2>API tokens</h2>
+  <p class="help">A token lets a script call the REST API (<code>/api/v1/</code>) as you: same role, same firewalls. It is shown once, keep it secret; send it as <code>Authorization: Bearer &lt;token&gt;</code>.
+  Example: <code>curl -H "Authorization: Bearer $TOKEN" {{ request.host_url }}api/v1/firewalls</code></p>
+  {% if new_token %}<div class="flash ok"><b>Your new token (copy it now, it will not be shown again):</b><br><code class="mono" style="word-break:break-all">{{ new_token }}</code></div>{% endif %}
+  {% if tokens %}<div class="table-wrap"><table><thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead><tbody>
+  {% for t in tokens %}<tr><td><b>{{ t.name }}</b></td><td class="mono">{{ t.prefix }}…</td><td class="nowrap muted">{{ t.created }}</td><td class="nowrap muted">{{ t.last_used or "never" }}</td><td class="nowrap">{{ t.expires or "never" }}</td>
+  <td><form class="inline" method="post" action="{{ url_for('main.account_tokens') }}" data-confirm="Revoke the token {{ t.name }}?">{{ csrf() }}<input type="hidden" name="action" value="revoke"><input type="hidden" name="token_id" value="{{ t.id }}"><input type="hidden" name="name" value="{{ t.name }}"><button class="btn small danger">Revoke</button></form></td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="muted">No token.</p>{% endif %}
+  <form method="post" action="{{ url_for('main.account_tokens') }}">{{ csrf() }}<input type="hidden" name="action" value="create">
+    <div class="grid cols-3">
+      <div><label for="t_name">Name</label><input type="text" id="t_name" name="name" maxlength="64" required placeholder="e.g. grafana, ci-pipeline"></div>
+      <div><label for="t_expires">Expires</label><select id="t_expires" name="expires">{% for value, label in expiries %}<option value="{{ value }}" {{ 'selected' if value == '90' }}>{{ label }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="form-actions"><button class="btn">Create a token</button></div>
+  </form>
+</div>
+
 {% endblock %}

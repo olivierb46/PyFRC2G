@@ -15,7 +15,7 @@ import os
 import sys
 from datetime import timedelta
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 MIN_ENGINE_VERSION = (2, 3, 0)
 ENGINE_URL = "git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine"
 
@@ -74,6 +74,7 @@ def create_app(data_dir=None, start_workers=True):
 
     from pyfrc2g_web import access, audit, charts, filters, notify, oidc, redisutil, security
     from pyfrc2g_web.admin import bp as admin_bp
+    from pyfrc2g_web.api import bp as api_bp
     from pyfrc2g_web.jobs import Runner, Scheduler
     from pyfrc2g_web.routes import bp as main_bp
     from pyfrc2g_web.routes import register_error_handlers
@@ -103,6 +104,8 @@ def create_app(data_dir=None, start_workers=True):
         SESSION_COOKIE_SECURE=os.environ.get("PYFRC2G_WEB_SECURE_COOKIES", "").lower() in ("1", "true", "yes"),
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
         MAX_SESSIONS=max(0, int(os.environ.get("PYFRC2G_MAX_SESSIONS", "0") or 0)),  # per user, 0 = no limit
+        OIDC_TOKEN_IDLE_DAYS=max(1, int(os.environ.get("PYFRC2G_OIDC_TOKEN_IDLE_DAYS", "30") or 30)),
+        OIDC_REVALIDATE_MINUTES=max(5, int(os.environ.get("PYFRC2G_OIDC_REVALIDATE_MINUTES", "60") or 60)),
         RISK_FOUR_EYES=os.environ.get("PYFRC2G_RISK_FOUR_EYES", "").lower() in ("1", "true", "yes"),
         RISK_REMINDER_DAYS=max(1, int(os.environ.get("PYFRC2G_RISK_REMINDER_DAYS", "14") or 14)),
         MAX_CONTENT_LENGTH=max_upload * 1024 * 1024,
@@ -116,6 +119,7 @@ def create_app(data_dir=None, start_workers=True):
         oidc.init_app(app, data_dir, oidc_settings, redis_client)  # Server-side sessions + /oidc/* routes.
 
     app.before_request(security.load_user)
+    app.before_request(security.require_password_change)
     app.before_request(security.check_csrf)
     app.after_request(security.security_headers)
     app.jinja_env.globals.update(csrf_token=security.csrf_token, charts=charts, version=__version__,
@@ -124,6 +128,7 @@ def create_app(data_dir=None, start_workers=True):
     filters.register(app)
     app.register_blueprint(main_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(api_bp)
     register_error_handlers(app)
     _bootstrap_admin(app.db)
     if start_workers:  # Compute trend figures for analyses stored by an older version.
@@ -154,7 +159,8 @@ def _bootstrap_admin(db):
     if problem:
         logging.error(f"PYFRC2G_ADMIN_PASSWORD rejected: {problem}")
         return
-    db.create_user(username, hash_password(password), "admin")
+    # The password sits in a file: the administrator has to choose another one at the first sign-in.
+    db.create_user(username, hash_password(password), "admin", must_change=True)
     db.add_event("system", "user created", f"{username} (admin, from environment)")
     logging.info(f"Administrator {username} created from the environment")
 
