@@ -50,8 +50,83 @@ _KNOWN_KEYS = {"interface", "action", "protocol", "port", "source", "destination
                "disabled", "floating", "ip_version", "gateway", "automatic"}
 
 
+# A comment pattern is run against text that comes from the configuration of a firewall. Python's regex engine
+# can take exponential time on some patterns ("(a+)+$") and cannot be interrupted, so a pattern is refused when
+# it can: a repetition without limit that contains another repetition or an alternation, too many unlimited
+# repetitions, or too long. The text is cut as well.
+MAX_PATTERN_LENGTH = 200
+MAX_UNBOUNDED_REPEATS = 3
+MAX_COMMENT_TEXT = 500
+
+
 class PolicyError(ValueError):
     pass
+
+
+def check_comment_regex(pattern):
+    """Raise PolicyError if the comment pattern is invalid or can take exponential time."""
+    try:
+        from re import _constants as sre_constants
+        from re import _parser as sre_parse
+    except ImportError:  # Python < 3.11
+        import sre_constants
+        import sre_parse
+    text = str(pattern).lstrip("!")
+    if len(text) > MAX_PATTERN_LENGTH:
+        raise PolicyError(f"comment regex too long (more than {MAX_PATTERN_LENGTH} characters): {text[:40]!r}...")
+    try:
+        parsed = sre_parse.parse(text)
+    except re.error as e:
+        raise PolicyError(f"invalid comment regex {pattern!r}: {e}") from e
+    repeats = (sre_constants.MAX_REPEAT, sre_constants.MIN_REPEAT)
+    unbounded = sre_constants.MAXREPEAT
+
+    def children(op, arg):
+        if op in repeats:
+            return [arg[2]]
+        if op is sre_constants.SUBPATTERN:
+            return [arg[-1]]
+        if op is sre_constants.BRANCH:
+            return list(arg[1])
+        if op in (sre_constants.ASSERT, sre_constants.ASSERT_NOT):
+            return [arg[1]]
+        if op is sre_constants.GROUPREF_EXISTS:
+            return [p for p in arg[1:] if p is not None]
+        return []
+
+    def unambiguous(branches):
+        """True if the alternatives are plain texts and none is the beginning of another: (foo|bar|baz)+ cannot be
+        read in two ways, so it is fast; (a|aa)+ can, and is not."""
+        words = []
+        for branch in branches:
+            ops = list(branch)
+            if not ops or any(op is not sre_constants.LITERAL for op, _ in ops):
+                return False
+            words.append("".join(chr(code) for _, code in ops).lower())
+        return not any(i != j and y.startswith(x) for i, x in enumerate(words) for j, y in enumerate(words))
+
+    def risky(sub, inside):
+        """True if an unlimited repetition holds another repetition or an alternation."""
+        count = 0
+        for op, arg in sub:
+            nested = inside
+            if op in repeats and arg[1] == unbounded:
+                count += 1
+                nested = True
+            if inside and (op in repeats and arg[1] > 1 or (op is sre_constants.BRANCH and not unambiguous(arg[1]))):
+                return True, count
+            for child in children(op, arg):
+                bad, sub_count = risky(child, nested)
+                count += sub_count
+                if bad:
+                    return True, count
+        return False, count
+
+    bad, count = risky(parsed, False)
+    if bad or count > MAX_UNBOUNDED_REPEATS:
+        raise PolicyError(f"comment regex {text[:40]!r} could take far too long on some text (nested repetition, "
+                          f"alternation inside a repetition, or more than {MAX_UNBOUNDED_REPEATS} "
+                          "unlimited repetitions)")
 
 
 def load_policy(path):
@@ -102,9 +177,9 @@ def parse_policy(text, yaml_format=True):
                 if key == "comment":
                     for pattern in _values(value):
                         try:
-                            re.compile(str(pattern).lstrip("!"))
-                        except re.error as e:
-                            raise PolicyError(f"Policy {pid}: invalid comment regex {pattern!r}: {e}") from e
+                            check_comment_regex(pattern)
+                        except PolicyError as e:
+                            raise PolicyError(f"Policy {pid}: {e}") from e
         checked.append({"id": pid, "description": str(policy.get("description") or ""),
                         "severity": severity, "match": policy.get("match") or {},
                         "require": policy.get("require")})
@@ -143,7 +218,8 @@ def _single(rule, key, value):
         field = rule.src if key == "source" else rule.dst
         return netmodel.addr_intersects(field, target) is not False
     if key == "comment":
-        return re.search(str(value), rule.row.get("COMMENT") or "", re.IGNORECASE) is not None
+        text = (rule.row.get("COMMENT") or "")[:MAX_COMMENT_TEXT]
+        return re.search(str(value), text, re.IGNORECASE) is not None
     if key == "disabled":
         return (not rule.enabled) == _bool(value)
     if key == "floating":

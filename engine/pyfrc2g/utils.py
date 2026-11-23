@@ -37,6 +37,16 @@ def safe_filename(name):
     return (name or "").replace('/', '_').replace(' ', '_').replace(',', '_').replace('<', '').replace('>', '')
 
 
+def safe_gateway_name(name):
+    """Return a gateway name that is safe as a directory name: no separator, control character or leading dot.
+
+    The name can come from a file that is not trusted (hostname of a backup): "../.." must not leave the output
+    directory. Ordinary names are returned unchanged.
+    """
+    text = re.sub(r"[\x00-\x1f\x7f/\\]", "_", str(name or "")).strip()[:100].lstrip(".").strip()
+    return text or "gateway"
+
+
 def normalize_interface(entry_interface):
     """Return interface as string (API may return list e.g. pfSense). Handles None, list, str."""
     if entry_interface is None:

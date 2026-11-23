@@ -39,6 +39,8 @@ def _xlsx_sheet(wb, title, fieldnames, rows, color_of=None):
             fill = fills.get(color) or fills.setdefault(color, PatternFill("solid", fgColor=color.lstrip("#")))
         for col in range(1, len(fieldnames) + 1):
             cell = ws.cell(row=index, column=col)
+            if cell.data_type == "f":  # A text starting with "=" is not a formula (it may come from a rule comment).
+                cell.data_type = "s"
             cell.alignment = alignment
             if fill:
                 cell.fill = fill

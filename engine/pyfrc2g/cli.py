@@ -56,6 +56,26 @@ def check_dependencies():
 # Settings
 # ---------------------------------------------------------------------------
 
+def _trusted_env_file(path):
+    """True if the .env of the current directory exists and can be trusted without the user asking for it.
+
+    A .env found in the directory where the command is run could be put there by someone else (a downloaded
+    archive, a shared folder) and would set the firewall URLs, the keys, the TLS checks. It is read only when
+    it belongs to the current user and cannot be written by the group or the others. A file given with
+    --env-file is always read.
+    """
+    if not os.path.isfile(path):
+        return False
+    if os.name != "posix":
+        return True
+    info = os.stat(path)
+    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+        logging.warning(f"{os.path.abspath(path)} ignored: it must belong to you and not be writable by others "
+                        "(chmod 600), or be given with --env-file")
+        return False
+    return True
+
+
 def apply_settings(args):
     """Load .env / environment variables, then CLI options, into the configuration module."""
     from pyfrc2g import config as cfg
@@ -64,9 +84,10 @@ def apply_settings(args):
     if env_file and not os.path.isfile(env_file):
         logging.error(f".env file not found: {env_file}")
         return False
-    count = cfg.load_env_file(env_file or ".env")
-    if count:
-        logging.info(f"Loaded {count} variable(s) from {env_file or '.env'}")
+    if env_file or _trusted_env_file(".env"):
+        count = cfg.load_env_file(env_file or ".env")
+        if count:
+            logging.info(f"Loaded {count} variable(s) from {env_file or '.env'}")
     try:
         applied = cfg.apply_environment()
     except (OSError, ValueError, ImportError) as e:

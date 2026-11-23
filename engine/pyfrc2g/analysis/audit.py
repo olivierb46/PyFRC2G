@@ -83,7 +83,8 @@ def _check_rule(row, config, wan_names):
     rule = netmodel.compiled(row)
     src_any = rule.src.any and not rule.src.negated
     # Loopback and locally generated traffic (iptables/nft OUTPUT chain) are not exposures.
-    local_only = rule.in_iface == "lo" or rule.group.rsplit("/", 1)[-1].lower() == "output"
+    local_only = rule.in_iface == "lo" or (config.gateway_type in ("iptables", "nftables")
+                                           and rule.group.rsplit("/", 1)[-1].lower() == "output")
     any_any = src_any and rule.dst.any and not rule.dst.negated and not local_only
     if any_any:
         if rule.ports.any and rule.protos is None:
@@ -99,9 +100,15 @@ def _check_rule(row, config, wan_names):
                                      f"Any source to any destination ({', '.join(scope)})."))
 
     is_floating = is_true(row.get("FLOATING"))
-    on_wan = interface_names(row.get("GATEWAY", "")) & wan_names or (rule.in_iface in wan_names)
-    if not is_floating and on_wan:
-        if not src_any:
+    if is_floating:  # Floating rule: the interfaces it lists (none listed = every interface), not outbound only.
+        listed = {str(i).lower() for i in rule.ifaces}
+        on_wan = rule.direction != "out" and (bool(listed & wan_names) or not listed)
+    else:
+        on_wan = interface_names(row.get("GATEWAY", "")) & wan_names or (rule.in_iface in wan_names)
+    if on_wan:
+        # "!10.0.0.0/8" is every address but that network: the Internet is in it. Only a plain list of addresses
+        # (private ranges, a partner) is not an exposure.
+        if not (src_any or rule.src.negated):
             return findings
         ranges = None if rule.ports.any else rule.ports.ranges
         if ranges == []:

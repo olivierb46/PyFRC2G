@@ -74,6 +74,7 @@ def _parse_expr(exprs):
                 states = right if isinstance(right, list) else (right.get("set") if isinstance(right, dict)
                                                                 else [right])
                 spec["state"] = {str(s).lower() for s in states}
+                spec["state_negated"] = op == "!="
                 continue
             if key:
                 set_name = _set_name(right)
@@ -155,7 +156,8 @@ def parse(path):
         verdict = spec.get("verdict")
         action = _VERDICTS.get(verdict, verdict or "log")
         states = spec.get("state") or set()
-        established_only = bool(states) and "new" not in states and "invalid" not in states
+        # Only "ct state established,related" never matches a new flow; a negated test matches all of them.
+        established_only = bool(states) and not spec.get("state_negated") and states <= {"established", "related"}
         comment = rule.get("comment", "")
         if action == "jump":
             comment = f"{comment} -> {spec.get('jump')}".strip()

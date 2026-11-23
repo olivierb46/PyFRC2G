@@ -64,6 +64,7 @@ def _parse_spec(tokens):
             spec[key] = tokens[i + 1]
             if key == "state":
                 spec[key] = tokens[i + 1].upper()
+                spec["state_negated"] = bool(negate)
             if negate and key in _NEGATABLE:
                 spec["negate"].add(key)
         negate = False
@@ -146,8 +147,9 @@ def parse(path):
 
         action = _ACTIONS.get(target, "jump" if target else "log")
         state = spec.get("state", "")
-        established_only = bool(state) and "NEW" not in state and "INVALID" not in state \
-            and "UNTRACKED" not in state
+        # Only "ct state established,related" never matches a new flow; "! --ctstate ..." matches all of them.
+        established_only = bool(state) and not spec.get("state_negated") \
+            and set(state.split(",")) <= {"ESTABLISHED", "RELATED"}
         comment = spec.get("comment", "")
         if action == "jump":
             comment = f"{comment} -> {target}".strip()

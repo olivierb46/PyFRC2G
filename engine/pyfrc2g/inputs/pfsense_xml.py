@@ -388,8 +388,8 @@ def parse_xml_backup(xml_path):
 
     try:
         root = parse(xml_path).getroot()
-    except ParseError as e:
-        logging.error(f"Invalid XML file: {e}")
+    except (ParseError, ValueError, RecursionError) as e:  # ValueError: defusedxml refuses entities and DTDs.
+        logging.error(f"Invalid or unsafe XML file: {e}")
         return None, [], None, None, []
 
     gateway_type = _detect_type_from_root(root)
@@ -404,6 +404,8 @@ def parse_xml_backup(xml_path):
     logging.info(f"Detected {gateway_type} backup, parsing...")
     parser = parse_pfsense_backup if gateway_type == "pfsense" else parse_opnsense_backup
     aliases_dict, rules = parser(root)
+    for rule in rules:
+        rule["_backup"] = True  # config.xml only holds configured rules: see is_automatic_entry.
     nat_rules = parse_nat_rules(root)
     aliases_dict["nat_outbound_mode"] = outbound_nat_mode(root)
 

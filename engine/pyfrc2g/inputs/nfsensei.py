@@ -371,12 +371,3 @@ class NfSenseiClient(APIClient):
             logging.info(f"✓ nfSensei counters: {len(counters)} counted rule(s) "
                          f"({(data or {}).get('uncounted_count', 0)} rule(s) without counters)")
         return counters
-
-    def fetch_host_name(self):
-        """Return the firewall host name, or None if unavailable."""
-        name = ((self._config().get("system") or {}).get("hostname"))
-        if name:
-            return name
-        data = self._data("/api/v1/system/info", "fetching nfSensei system information",
-                          timeout=10, log_level=logging.DEBUG)
-        return (data or {}).get("hostname") if isinstance(data, dict) else None

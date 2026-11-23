@@ -229,8 +229,13 @@ class APIClient:
             kwargs["params"] = params
         if json_body is not None:
             kwargs["json"] = json_body
+        # No redirect: the API headers (key, token) would be sent to whatever host the answer points to.
+        kwargs["allow_redirects"] = False
         try:
             response = self.session.request(method, url, **kwargs)
+            if 300 <= response.status_code < 400:
+                raise RuntimeError(f"redirect to {response.headers.get('Location', '?')} refused: "
+                                   "use the final URL of the firewall")
             response.raise_for_status()
             return response
         except Exception as e:  # RequestException and anything unexpected.

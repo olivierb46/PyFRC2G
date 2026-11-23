@@ -318,6 +318,10 @@ class Config:
         if not self.gateway_name:
             host = extract_host_from_url(url) if url not in _PLACEHOLDER_URLS else "unknown"
             self.gateway_name = host if host != "unknown" else "gateway"
+        # The name becomes a directory: it may come from an untrusted backup (hostname).
+        from pyfrc2g.utils import safe_gateway_name
+
+        self.gateway_name = safe_gateway_name(self.gateway_name)
 
         # Output directory: <output base>/<gateway name>/.
         self.output_base = output_base or DEFAULT_OUTPUT_DIR

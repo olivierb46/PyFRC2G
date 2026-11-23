@@ -42,7 +42,7 @@ def _find_files(path):
     slotinfo = os.path.join(filter_dir, "slotinfo")
     if os.path.isfile(slotinfo):
         with open(slotinfo, encoding="utf-8", errors="replace") as f:
-            match = re.search(r"^\s*Active\s*=\s*(\d+)", f.read(), re.MULTILINE | re.IGNORECASE)
+            match = re.search(r"^[ \t]*Active[ \t]*=[ \t]*(\d+)", f.read(), re.MULTILINE | re.IGNORECASE)
         if match:
             active = next((s for s in slots if int(s) == int(match.group(1))), None)
     chosen = active or (slots[0] if slots else None)

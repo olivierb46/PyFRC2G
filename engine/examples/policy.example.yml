@@ -23,6 +23,8 @@
 #   destination  network: matches when the rule can     destination: ["10.0.0.0/8", srv_db]
 #                reach part of it
 #   comment      regular expression (case-insensitive)  comment: "CHG-\\d+"
+#                (at most 200 characters, 3 unlimited repetitions, no nested repetition such as (a+)+; only the
+#                first 500 characters of a comment are tested)
 #   disabled     true / false                           disabled: true
 #   floating     true / false                           floating: true
 #   ip_version   4 or 6                                 ip_version: 6

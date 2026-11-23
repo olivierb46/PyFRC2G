@@ -23,6 +23,7 @@ _ADDR_SUFFIXES = (":ip", "ip", " address", ":address")
 _NET_SUFFIXES = (" net", ":net", " subnet", ":network")
 _SPLIT = re.compile(r"\s*[,|]\s*|\s+")
 _PORT_RANGE = re.compile(r"^(\d{1,5})(?:\s*[:\-]\s*(\d{1,5}))?$")
+_MAX_ITEMS = 5000  # Items of one alias (after de-duplication) above which it is treated as unknown.
 _MAX_DEPTH = 10
 
 # Service names used by FortiGate / Stormshield / iptables configurations.
@@ -190,8 +191,13 @@ def _iface_suffix(token, suffixes):
     return None
 
 
-def _resolve_token(token, depth, seen):
-    """Return a list of Items for one token (alias names are expanded recursively)."""
+def _resolve_token(token, depth, seen, memo=None):
+    """Return a list of Items for one token (alias names are expanded recursively).
+
+    `memo` keeps the result of each alias for the whole resolution, and the items are de-duplicated: an alias
+    that lists the next one many times over many levels would otherwise take exponential time (hostile config).
+    """
+    memo = {} if memo is None else memo
     low = token.strip().lower()
     if low in _SELF_TOKENS:
         return [Item("self", interface_addresses())]
@@ -213,20 +219,28 @@ def _resolve_token(token, depth, seen):
 
     alias = utils.API_ALIAS_DETAILS.get(low)
     if alias and depth < _MAX_DEPTH and low not in seen:
+        if low in memo:
+            return memo[low]
         alias_type = str(alias.get("type") or "").lower()
         content = str(alias.get("content") or "")
         if alias_type in ("url", "urltable", "url_ports", "urltable_ports", "geoip", "dynipv6host",
                           "external", "asn", "mac", "authgroup", "internal"):
             return [Item(f"alias:{low}", known=False)]
-        items = []
+        items = {}
         for part in _SPLIT.split(content):
             if part:
-                items.extend(_resolve_token(part, depth + 1, seen | {low}))
-        if not items:
-            return [Item(f"alias:{low}", known=False)]
-        if any(i.key == "any" for i in items):
-            return [Item("any")]
-        return items
+                for item in _resolve_token(part, depth + 1, seen | {low}, memo):
+                    items.setdefault(item.key, item)
+                if len(items) > _MAX_ITEMS:  # Absurdly large: do not pretend to know it.
+                    memo[low] = [Item(f"alias:{low}", known=False)]
+                    return memo[low]
+        result = list(items.values())
+        if not result:
+            result = [Item(f"alias:{low}", known=False)]
+        elif any(i.key == "any" for i in result):
+            result = [Item("any")]
+        memo[low] = result
+        return result
     if low in _ANY_TOKENS:
         return [Item("any")]
     return [Item(f"name:{low}", known=False)]  # FQDN, unknown alias, ipset...
@@ -250,9 +264,9 @@ def _resolve_address(text):
     # Keep multi-word interface forms ("LAN net", "LAN address") together.
     if len(tokens) == 2 and tokens[1].lower() in ("net", "address", "subnet"):
         tokens = [body]
-    items = []
+    items, memo = [], {}
     for token in tokens:
-        items.extend(_resolve_token(token, 0, frozenset()))
+        items.extend(_resolve_token(token, 0, frozenset(), memo))
     if any(item.key == "any" for item in items):
         return AddrSet(text, any_=True, negated=negated)
     return AddrSet(text, negated=negated, items=items)
@@ -363,7 +377,8 @@ class PortSet:
         return f"PortSet({self.raw!r}, any={self.any}, ranges={self.ranges}, unresolved={self.unresolved})"
 
 
-def _resolve_port_token(token, depth, seen):
+def _resolve_port_token(token, depth, seen, memo=None):
+    memo = {} if memo is None else memo  # Result of each alias, as for the addresses: no exponential expansion.
     low = token.strip().lower()
     match = _PORT_RANGE.match(low)
     if match:
@@ -374,16 +389,19 @@ def _resolve_port_token(token, depth, seen):
         return [(port, port)], []
     alias = utils.API_ALIAS_DETAILS.get(low)
     if alias and depth < _MAX_DEPTH and low not in seen:
+        if low in memo:
+            return memo[low]
         ranges, unresolved = [], []
         content = str(alias.get("content") or "")
         if str(alias.get("type") or "").lower() in ("url_ports", "urltable_ports") or not content:
             return [], [low]
         for part in _SPLIT.split(content):
             if part:
-                r, u = _resolve_port_token(part, depth + 1, seen | {low})
-                ranges.extend(r)
-                unresolved.extend(u)
-        return ranges, unresolved
+                r, u = _resolve_port_token(part, depth + 1, seen | {low}, memo)
+                ranges = _merge_ranges(ranges + r)
+                unresolved.extend(x for x in u if x not in unresolved)
+        memo[low] = (ranges, unresolved)
+        return memo[low]
     if low in _ANY_TOKENS:
         return [(0, 65535)], []
     return [], [low]
@@ -401,10 +419,10 @@ def resolve_ports(raw):
 def _resolve_ports(text):
     if text.lower() in _ANY_TOKENS:
         return PortSet(text, any_=True)
-    ranges, unresolved = [], []
+    ranges, unresolved, memo = [], [], {}
     for token in _SPLIT.split(text):
         if token:
-            r, u = _resolve_port_token(token, 0, frozenset())
+            r, u = _resolve_port_token(token, 0, frozenset(), memo)
             ranges.extend(r)
             unresolved.extend(u)
     merged = _merge_ranges(ranges)

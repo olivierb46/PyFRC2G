@@ -60,7 +60,9 @@ def _plain_label(lines, width=LABEL_WRAP_WIDTH):
     """Multi-line label for non-record shapes (backslashes escaped, lines joined with \\n)."""
     out = []
     for line in lines:
-        out.extend(textwrap.wrap(str(line).replace("\\", "\\\\"), width=width) or [""])
+        # "<" and ">" are removed: a label wrapped in them is an HTML-like label for Graphviz (markup, IMG SRC).
+        text = str(line).replace("\\", "\\\\").replace("<", "").replace(">", "")
+        out.extend(textwrap.wrap(text, width=width) or [""])
     return r"\n".join(out)
 
 

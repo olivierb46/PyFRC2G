@@ -122,7 +122,9 @@ def is_automatic_entry(entry, gateway_type):
     for key in ("automatic", "is_automatic"):
         if entry.get(key) is not None:
             return str(entry.get(key)).strip().lower() in ("true", "1", "yes")
-    if gateway_type != "opnsense":
+    if gateway_type != "opnsense" or entry.get("_backup"):
+        # A backup never holds generated rules (they are not stored in config.xml): its uuid is chosen by whoever
+        # wrote the file and must not be able to exempt a rule from the audit.
         return False
     return bool(_AUTOMATIC_ID.match(str(entry.get("uuid") or "").lower()))
 

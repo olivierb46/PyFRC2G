@@ -81,7 +81,8 @@ class CISOCClient:
                     data=data,
                     headers=headers,
                     verify=self.verify,
-                    timeout=60
+                    timeout=60,
+                    allow_redirects=False,  # The token must not follow a redirect to another host.
                 )
 
                 response.raise_for_status()
