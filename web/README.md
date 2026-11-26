@@ -16,12 +16,35 @@ The image only contains Python, Graphviz and the dependencies (`requirements.txt
 (`web/pyfrc2g_web` and `engine/pyfrc2g`) is mounted as read-only volumes from the cloned
 repository. The image stays small, and updating does not need a rebuild.
 
+The web application runs with Docker (Compose). Three services start together: **nginx** (the only way in, HTTPS),
+the **application** and **Redis** (sign-in counters, sessions with SSO).
+
+**Prerequisites**
+
+1. Docker with the Compose plugin, and ports 80 and 443 free on the host (or `PYFRC2G_HTTP_PORT` /
+   `PYFRC2G_HTTPS_PORT` in `.env`; a rootless podman cannot bind below 1024).
+2. A **TLS certificate** for the name of the site: `nginx/certs/fullchain.pem` (certificate and chain) and
+   `nginx/certs/privkey.pem` (private key, no passphrase), readable by everybody on the host (`chmod 644`, the folder is
+   ignored by git). From your CA or Let's Encrypt; for a test, a self-signed one (the browser warns):
+
+   ```bash
+   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 365 -subj "/CN=localhost" \
+       -addext "subjectAltName=DNS:localhost" -keyout nginx/certs/privkey.pem -out nginx/certs/fullchain.pem
+   chmod 644 nginx/certs/*.pem
+   ```
+   (use your own name instead of `localhost`, and the same one in `PYFRC2G_SERVER_NAME`).
+3. A **password for Redis** in `.env` (`docker compose` refuses to start without it): `PYFRC2G_REDIS_PASSWORD`, for
+   example `openssl rand -base64 36 | tr -d '/+='`.
+
 ```bash
 git clone https://github.com/olivierb46/PyFRC2G.git
 cd PyFRC2G/web
-cp .env.example .env                 # works as is: sign in as admin, then change the password
-docker compose up -d --build         # http://localhost:8080
+cp .env.example .env                 # then set PYFRC2G_REDIS_PASSWORD (and PYFRC2G_SERVER_NAME) in it
+# put the certificate in nginx/certs/ (prerequisite 2)
+docker compose up -d --build         # https://localhost/ : sign in as admin, then change the password
 ```
+
+After renewing the certificate: `docker compose restart nginx`. See *HTTPS reverse proxy* and *Redis* below.
 
 Update to a new version:
 
@@ -44,29 +67,9 @@ ignored elsewhere. Create the first administrator with `PYFRC2G_ADMIN_USER` /
 `PYFRC2G_ADMIN_PASSWORD`, or
 `docker compose exec pyfrc2g-web python -m pyfrc2g_web --create-admin admin`.
 
-## 💾 Installation without Docker
-
-Graphviz must be installed on the system (`apt install graphviz`, `dnf install graphviz`,
-`brew install graphviz`). From the root of the repository, one command installs the engine and
-the web application:
-
-```bash
-pip install ./engine ./web              # development: pip install -e ./engine -e ./web
-
-export PYFRC2G_SECRET_KEY="a long passphrase or a Fernet key"
-pyfrc2g-web --create-admin admin        # first administrator (password prompted)
-pyfrc2g-web                             # http://127.0.0.1:8080
-```
-
-Without cloning (git required):
-
-```bash
-pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine" \
-            "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=web"
-```
-
-The engine is not published on PyPI: always install it with the web application as shown
-above (`pyfrc2g-web` declares `pyfrc2g>=2.3.0`).
+Commands of the application are run in the container, for example
+`docker compose exec pyfrc2g-web python -m pyfrc2g_web --create-admin NAME`. The command line engine
+(`pip install ./engine`) is independent of the web application: see the [engine README](../engine/README.md).
 
 ## ✨ Features
 
@@ -149,18 +152,16 @@ clear on disk.
 | Setting | Variable / option | Default |
 |---------|-------------------|---------|
 | Encryption key | `PYFRC2G_SECRET_KEY` (`PYFRC2G_SECRET_KEY_OLD` for rotation) | generated in `<data dir>/secret.key` |
-| First administrator | `pyfrc2g-web --create-admin NAME`, or `PYFRC2G_ADMIN_USER` / `PYFRC2G_ADMIN_PASSWORD` (empty database only) | none |
-| Address / port | `--host` / `--port`, `PYFRC2G_WEB_HOST` / `PYFRC2G_WEB_PORT` | `127.0.0.1` / `8080` (`0.0.0.0` in Docker) |
-| Data directory | `--data-dir`, `PYFRC2G_DATA_DIR` | `pyfrc2g-data` (`/data` in Docker) |
-| Schedule | Settings page (default interval; each firewall can have its own or be manual only), or `--every` / `PYFRC2G_SCHEDULE` at start-up | none |
+| First administrator | `PYFRC2G_ADMIN_USER` / `PYFRC2G_ADMIN_PASSWORD` (empty database only), or `docker compose exec pyfrc2g-web python -m pyfrc2g_web --create-admin NAME` | none |
+| Site name | `PYFRC2G_SERVER_NAME` (certificate, redirection) and `PYFRC2G_HTTP_PORT` / `PYFRC2G_HTTPS_PORT` | `localhost`, 80, 443 |
+| Schedule | Settings page (default interval; each firewall can have its own or be manual only), or `PYFRC2G_SCHEDULE` | none |
 | Upload limit | `PYFRC2G_WEB_MAX_UPLOAD_MB` | 50 (a full nfSensei backup `.tar.gz` can be several hundred MB: only its `running.yaml` is kept) |
-| Behind a reverse proxy | `PYFRC2G_WEB_PROXY=1` (trust `X-Forwarded-*`), `PYFRC2G_WEB_SECURE_COOKIES=1` (HTTPS only cookies) | off |
+| Proxy, secure cookies, Redis | set by `docker-compose.yml` (`PYFRC2G_WEB_PROXY`, `PYFRC2G_WEB_SECURE_COOKIES`, `PYFRC2G_REDIS_URL`) | on |
 
 ### Single sign-on (OpenID Connect)
 
-Optional: `pip install "pyfrc2g-web[oidc]"` (flask-oidc + Flask-Session, already in `requirements.txt` /
-the Docker image), then set `PYFRC2G_OIDC_ISSUER`, `PYFRC2G_OIDC_CLIENT_ID` and
-`PYFRC2G_OIDC_CLIENT_SECRET` (see `.env.example`). Declare this redirect URI at the identity
+Optional (flask-oidc and Flask-Session are in the Docker image): set `PYFRC2G_OIDC_ISSUER`, `PYFRC2G_OIDC_CLIENT_ID` and
+`PYFRC2G_OIDC_CLIENT_SECRET` in `.env` (see `.env.example`). Declare this redirect URI at the identity
 provider: `https://<your-host>/oidc/authorize`. The login page then shows a "Sign in with SSO" button.
 
 - Users are created at first sign-in, without a local password. Their role is recomputed at each
@@ -168,8 +169,7 @@ provider: `https://<your-host>/oidc/authorize`. The login page then shows a "Sig
   `groups`) are administrators, the others get `PYFRC2G_OIDC_DEFAULT_ROLE` (default `viewer`);
   `PYFRC2G_OIDC_ALLOWED_GROUPS` restricts who may sign in at all.
 - An SSO user whose name equals a local account is refused (no takeover of a local administrator).
-- Sessions become server-side (files in `<data dir>/sessions`, mode 0700; the cookie holds only a
-  random identifier, renewed at sign-in). An SSO session lasts `PYFRC2G_OIDC_REVALIDATE_MINUTES` (60 by default): then
+- Sessions become server-side (in Redis; the cookie holds only a random identifier, renewed at sign-in). An SSO session lasts `PYFRC2G_OIDC_REVALIDATE_MINUTES` (60 by default): then
   the user is sent back to the identity provider, which is how a revocation or a change of group there takes effect. Sign-out ends the application session, not the one at the
   identity provider. Local accounts keep working as a break-glass access.
 
@@ -231,8 +231,10 @@ An unreachable collector never blocks the application. The log can also be downl
 
 *Administration > Backup & keys*: download a consistent snapshot of the database encrypted with a
 passphrase you choose (scrypt + Fernet; not stored). Restore with the application stopped:
-`pyfrc2g-web --restore-backup FILE --data-dir DIR [--force]`; you need the passphrase **and**
-`PYFRC2G_SECRET_KEY` (the content is encrypted with it too).
+`docker compose stop pyfrc2g-web`, then
+`docker compose run --rm -v "$PWD/backup.bin:/backup.bin:ro" pyfrc2g-web --restore-backup /backup.bin [--force]`
+(the entry point of the image is the application); you need the passphrase **and** `PYFRC2G_SECRET_KEY` (the content is
+encrypted with it too), then `docker compose start pyfrc2g-web`.
 
 Key rotation: new key in `PYFRC2G_SECRET_KEY`, previous one in `PYFRC2G_SECRET_KEY_OLD`, restart, click
 *Re-encrypt* on that page (it shows how many values still use an old key), then remove the old key.
@@ -290,6 +292,25 @@ are separate credentials, kept as they are. The secret and the recovery code has
 (and covered by the backup and the key rotation). The QR code is drawn with the small `segno` library; without it
 the key is typed by hand.
 
+### Remediation, rule simulation and owners
+
+- **Remediation** (*Remediation* page, *Assign a finding* in the Audit tab): a finding is assigned to somebody with a due
+  date and a note, and followed until it is gone. The analyses decide the status: a tracked finding that is no longer
+  among the findings is **fixed** (the analysis is the proof), one hidden because its risk was accepted is **accepted**,
+  one that comes back is **reopened**; *open*, *in progress* and *cancelled* are set by people (operators and
+  administrators). The page shows what is to do, what is overdue and the mean time to fix, filtered by status,
+  firewall or person (`assignee=me`). A daily `remediation overdue` event reaches the event log and the SIEM; the weekly
+  summary and `/metrics` (`pyfrc2g_remediations{status}`, `pyfrc2g_remediations_overdue`) carry the figures.
+- **Simulate a rule** (*Simulate a rule* page): choose a firewall, an interface and a position, describe a rule (action,
+  source, destination, protocol, port) and see what the audit of the engine says once it is inserted: the new
+  findings (including the rules it shadows or makes redundant), those that go away, and the score before and after.
+  It runs on the stored rules and their alias tables (analyse the firewall again once after the upgrade); the
+  compliance policy, the traffic counters, NAT and routing are not part of it, and nothing is sent to the firewall.
+- **Owners** (*Owners* page, CSV): for each owner, the firewalls, the rules owned and the rules to review, the findings
+  to fix and overdue, those fixed, and the accepted risks (with those about to expire). Owners are the names typed in
+  the firewall settings, the rule review and the assignments (case ignored); the rules nobody owns have their own line.
+  Everything is limited to the firewalls of the user scope.
+
 ### Rule review, cleanup plan, flow search and compliance
 
 - **Rule review** (*Rule review* button of a firewall): each rule can carry an **owner**, a **ticket** and a comment
@@ -336,60 +357,69 @@ empty). Gauges per firewall: `pyfrc2g_firewall_risk_score`, `_findings`, `_criti
 `_last_analysis_timestamp_seconds`, `_analysis_age_seconds`; plus `pyfrc2g_runs{status}`, `pyfrc2g_sessions`,
 `pyfrc2g_accepted_risks{status}` and `pyfrc2g_web_info{version}`. The figures cover the whole instance.
 
-### HTTPS reverse proxy (nginx)
+### Popup messages
 
-The application speaks plain HTTP: to reach it from other machines, put the **nginx** service of `docker-compose.yml`
-in front (TLS termination, request limits). In `.env`:
+The messages of the application (saved, refused, sign-in failed...) are shown as popups in the top-right corner of the
+page (`static/toast.js`, no dependency): green for a success, red for an error (kept longer, announced to screen
+readers as an alert), yellow for a warning, blue for information. They stack (five at most), pause while the pointer is
+over them and close on a click or at the end of their progress bar. A message set before a redirect is shown on the
+page that follows, once. The text is never taken for HTML, and no inline script or style is used, so the strict
+Content-Security-Policy is unchanged; without JavaScript the messages are listed in the page. Scripts can show one
+with `toast("text", "success" | "error" | "warning" | "info")`.
 
-```
-COMPOSE_PROFILES=proxy          # or proxy,redis
-PYFRC2G_SERVER_NAME=pyfrc2g.example.com
-PYFRC2G_WEB_PROXY=1             # the application trusts exactly one proxy hop (real client address, https)
-PYFRC2G_WEB_SECURE_COOKIES=1
-```
+### HTTPS reverse proxy (nginx) and Redis
 
-Put the certificate chain and the key in `nginx/certs/fullchain.pem` and `nginx/certs/privkey.pem` (from your CA or
-Let's Encrypt; `./nginx/self-signed.sh pyfrc2g.example.com` makes a self-signed one for a test; the folder is ignored
-by git and the files must be readable by the container user), then `docker compose up -d --build` and open
-`https://pyfrc2g.example.com/`. `PYFRC2G_HTTP_PORT` and `PYFRC2G_HTTPS_PORT` change the published ports (80 and 443).
+`docker compose up` starts three services, none of them optional:
 
-What it does: HTTP is redirected to the configured name only (never to the `Host` header of the client); TLS 1.2 and
-1.3 only, modern ciphers, one HSTS header; an unknown name gets no handshake; `X-Forwarded-*` are set by nginx and
-never copied from the client; sign-in, `/api/` and pages have their own request rate limits (429 beyond) and the
-upload size follows `PYFRC2G_WEB_MAX_UPLOAD_MB`; `/metrics` is not served on the Internet (scrape the application on
-`127.0.0.1:8080`). The container runs as an unprivileged user with a read-only filesystem and no capability. The
-application stays published on `127.0.0.1:8080` only: do not publish it on other addresses when the proxy is used.
+| Service | Role |
+|---|---|
+| `nginx` | the only way in: HTTPS on 443 (80 redirects to it), TLS 1.2 and 1.3, request limits |
+| `redis` | sign-in counters shared by every instance, and the sessions with SSO; internal network only |
+| `pyfrc2g-web` | the application, started with `PYFRC2G_WEB_PROXY=1`, secure cookies and the Redis settings |
 
-### Redis session store (optional)
+**Certificate** (prerequisite 2 above): `nginx/certs/fullchain.pem` and `privkey.pem`, for the name given in
+`PYFRC2G_SERVER_NAME` (`localhost` by default). nginx does not start without them, and the log of the container says
+so (`docker compose logs nginx`). After renewing them, `docker compose restart nginx`. `PYFRC2G_HTTP_PORT` and
+`PYFRC2G_HTTPS_PORT` change the published ports (80 and 443).
 
-By default sessions are files in `<data dir>/sessions`. For several
-instances, or to keep sessions out of the data volume, use Redis. With Docker, in `.env`:
+**nginx.** HTTP is redirected to the configured name only (never to the `Host` header of the client); an unknown name gets
+no handshake; one HSTS header; `X-Forwarded-*` are set by nginx and never copied from the client; sign-in, `/api/` and the
+pages have their own request limits (429 beyond); the upload size follows `PYFRC2G_WEB_MAX_UPLOAD_MB`; `/metrics` is not
+served on the Internet. nginx runs unprivileged, with a read-only filesystem and no capability.
 
-```
-COMPOSE_PROFILES=redis
-PYFRC2G_REDIS_URL=redis://pyfrc2g@redis:6379/0
-PYFRC2G_REDIS_PASSWORD=<openssl rand -base64 36 | tr -d '/+='>
-```
+**Redis** (prerequisite 3 above): internal network without outside route and no published port, `default` user disabled,
+one ACL user limited to `session:*` and `throttle:*` keys without admin or dangerous commands, nothing persisted,
+read-only filesystem, no capability, memory limit. The password is `PYFRC2G_REDIS_PASSWORD` of `.env`: the application
+checks the connection at start-up, refuses a Redis without password and never logs the URL. The sign-in counters are
+shared through it (hashed keys `throttle:*`) and fall back to memory if Redis fails; with SSO the sessions are kept
+there.
 
-The `redis` service of `docker-compose.yml` is hardened: internal network without outside route and no
-published port, `default` user disabled, one ACL user limited to `session:*` and `throttle:*` keys without admin or
-dangerous commands, nothing persisted to disk, read-only filesystem, no capabilities, memory limit.
-The application refuses a Redis without password, checks it at start-up (fails fast) and never logs the
-URL. For an external Redis use `rediss://` (TLS, certificate verified, `PYFRC2G_REDIS_CA` for a private CA).
-When `PYFRC2G_REDIS_URL` is set, the sign-in throttle (5 failures / 10 minutes) is also shared through Redis
-(hashed keys `throttle:*`), so it holds with several instances; it falls back to memory if Redis fails.
-Redis is used with or without SSO.
+**Monitoring.** The application is also published on `127.0.0.1:8080` (this machine only) for `/metrics` with its token;
+do not publish it on other addresses. Used directly over HTTP its cookies, which are `Secure`, are not kept: sign in
+through nginx.
 
 ### Security
 
-Passwords hashed (Werkzeug scrypt / PBKDF2), 10 characters minimum; sign-in locked for
-10 minutes after 5 failures (per address and per user); sessions signed with a key derived
+Passwords hashed (Werkzeug scrypt / PBKDF2), 10 characters minimum; sign-in protected against guessing (below);
+sessions signed with a key derived
 from the encryption key, invalidated when the password changes; CSRF token on every form;
 strict Content Security Policy (no inline script, no external resource), generated reports and
 SVG graphs served in a sandbox; secrets never sent back to the browser; uploaded archives
 extracted without leaving their directory. The application is served by waitress over plain
 HTTP: put a TLS reverse proxy (nginx, Traefik, Caddy...) in front of it when it is reachable
 from other machines.
+
+**Protection against guessing.** The failures are counted for each (user name, address) pair: five lock that pair, so
+somebody guessing from one address locks only themselves and cannot lock the real user out, who comes from another
+address. An address failing with many different names (one password tried on every account) is locked as a whole at
+four times the limit, and a successful sign-in does not clear it. Locks grow for whoever comes back: 10 minutes, then
+20, 40... up to 24 hours (remembered for a day). The second-factor step shares the same locks, and the message is the same
+for an unknown name. Thirty failures on one account within an hour, from anywhere, raise an `account under attack` event
+(event log, SIEM, and the notification channels subscribed to *Account under attack*) without locking anyone.
+*Administration > Users* shows the recent failures of an account with an *Unlock* button. `PYFRC2G_LOGIN_MAX_FAILURES`
+(5, at least 3), `PYFRC2G_LOGIN_LOCK_MINUTES` (10) and `PYFRC2G_LOGIN_MAX_LOCK_HOURS` (24) tune it. The counters are in
+Redis when it is configured (shared by every instance), else in memory (lost at a restart); nginx adds its own limit per
+address in front. Behind a proxy, `PYFRC2G_WEB_PROXY=1` is needed for the addresses to be the clients' ones.
 
 Also: signing out revokes the server-side session and a session never lives more than 12 hours; changing or
 resetting a password (or the second factor) revokes the API tokens of the account; the return address after

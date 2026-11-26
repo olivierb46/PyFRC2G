@@ -8,6 +8,7 @@ The result is an aid for change requests and audits, not a proof: NAT, routing a
 simulated.
 """
 
+import contextlib
 import ipaddress
 import json
 from collections import OrderedDict
@@ -27,6 +28,35 @@ def snapshot():
     maps = {"interface_map": utils.API_INTERFACE_MAP, "interface_nets": utils.API_INTERFACE_NETS,
             "alias_details": utils.API_ALIAS_DETAILS}
     return json.loads(json.dumps(maps, default=str))  # A copy that is certain to be storable.
+
+
+NO_MAPS = ("This analysis was stored without its alias tables: aliases and interface names cannot be resolved. "
+           "Analyse the firewall again.")
+
+
+@contextlib.contextmanager
+def maps_installed(data):
+    """Install the alias tables saved with an analysis into the engine, for the duration of the block.
+
+    The engine keeps them in module globals, shared with the analyses: the lock of the runner is held (FlowError
+    if an analysis keeps it for more than LOCK_WAIT seconds) and the previous tables are put back afterwards.
+    """
+    from pyfrc2g import utils
+
+    from pyfrc2g_web.jobs import RUN_LOCK
+
+    if not RUN_LOCK.acquire(timeout=LOCK_WAIT):
+        raise FlowError("An analysis is running: try again in a moment.")
+    previous = (utils.API_INTERFACE_MAP, utils.API_NET_MAP, utils.API_ADDRESS_MAP, utils.API_PORT_MAP,
+                utils.API_ALIAS_DETAILS, utils.API_INTERFACE_NETS)
+    try:
+        maps = data.get("maps") or {}
+        utils.update_api_maps(maps.get("interface_map", {}), {}, {}, {}, maps.get("alias_details", {}),
+                              maps.get("interface_nets", {}))
+        yield
+    finally:
+        utils.update_api_maps(*previous)
+        RUN_LOCK.release()
 
 
 def _version_label(text):
@@ -78,10 +108,6 @@ def _evaluate(data, source, destination, protocol, port):
 
 def search(data, source, destination, protocol="any", port=""):
     """Return {'results': [per interface], 'warning': text or ''} for one analysis. Raises FlowError."""
-    from pyfrc2g import utils
-
-    from pyfrc2g_web.jobs import RUN_LOCK
-
     source, destination = source.strip(), destination.strip()
     protocol = (protocol or "any").strip().lower()
     port = (port or "").strip() or "any"
@@ -89,19 +115,6 @@ def search(data, source, destination, protocol="any", port=""):
         raise FlowError("Give a source and a destination (address, network or alias).")
     if protocol not in PROTOCOLS:
         raise FlowError("Protocol: any, tcp, udp or icmp.")
-    maps = data.get("maps")
-    if not RUN_LOCK.acquire(timeout=LOCK_WAIT):
-        raise FlowError("An analysis is running: try again in a moment.")
-    previous = (utils.API_INTERFACE_MAP, utils.API_NET_MAP, utils.API_ADDRESS_MAP, utils.API_PORT_MAP,
-                utils.API_ALIAS_DETAILS, utils.API_INTERFACE_NETS)
-    try:
-        maps = maps or {}
-        utils.update_api_maps(maps.get("interface_map", {}), {}, {}, {}, maps.get("alias_details", {}),
-                              maps.get("interface_nets", {}))
+    with maps_installed(data):
         results = _evaluate(data, source, destination, protocol, port)
-    finally:
-        utils.update_api_maps(*previous)
-        RUN_LOCK.release()
-    warning = "" if maps else ("This analysis was stored without its alias tables: aliases and interface names "
-                               "cannot be resolved. Analyse the firewall again.")
-    return {"results": results, "warning": warning}
+    return {"results": results, "warning": "" if data.get("maps") else NO_MAPS}

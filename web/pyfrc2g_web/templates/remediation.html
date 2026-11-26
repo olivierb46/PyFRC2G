@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf, badge %}
+{% block title %}Remediation{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Remediation</h1>
+<div class="sub">Findings that somebody is fixing. The analyses decide when one is fixed: it is no longer among the findings; if it comes back, it reopens.
+Assign a finding from the <i>Audit</i> tab of a firewall.</div></div></div>
+
+<div class="card"><div class="stat-row">
+  <span><b>{{ overall.active }}</b> to do</span><span><b>{{ overall.overdue }}</b> overdue</span>
+  <span><b>{{ overall.counts.fixed }}</b> fixed{% if overall.mean_days_to_fix is not none %} (on average after {{ overall.mean_days_to_fix }} days){% endif %}</span>
+  <span><b>{{ overall.counts.reopened }}</b> reopened</span><span><b>{{ overall.counts.accepted }}</b> accepted as a risk</span>
+</div></div>
+
+<form class="filters-bar card section" method="get">
+  <label for="f-status">Status</label>
+  <select id="f-status" name="status" data-autosubmit><option value="active" {{ 'selected' if status == 'active' }}>To do</option><option value="all" {{ 'selected' if status == 'all' }}>All</option>{% for key, label in statuses %}<option value="{{ key }}" {{ 'selected' if status == key }}>{{ label }}</option>{% endfor %}</select>
+  <label for="f-fw">Firewall</label>
+  <select id="f-fw" name="firewall" data-autosubmit><option value="">All</option>{% for n in firewalls %}<option {{ 'selected' if n == firewall }}>{{ n }}</option>{% endfor %}</select>
+  <label for="f-who">Assigned to</label>
+  <input type="text" id="f-who" name="assignee" value="{{ assignee }}" list="people" placeholder="name, or me" class="w-sm">
+  <label class="check"><input type="checkbox" name="overdue" value="1" {{ 'checked' if request.args.get('overdue') }} data-autosubmit> Overdue only</label>
+  <button class="btn small secondary">Filter</button>
+</form>
+
+{% if items %}
+<datalist id="people">{% for p in people %}<option value="{{ p }}">{% endfor %}</datalist>
+<div class="table-wrap section"><table><thead><tr><th>Severity</th><th>Firewall</th><th>Finding</th><th>Assigned to</th><th>Due</th><th>Status</th><th>Age</th>{% if can('analyse') %}<th></th>{% endif %}</tr></thead><tbody>
+{% for i in items %}<tr>
+<td>{{ badge(i.severity) }}</td>
+<td><a href="{{ url_for('main.gateway', name=i.gateway, tab='audit') }}">{{ i.gateway }}</a></td>
+<td><b>{{ i.check_name }}</b><div class="small muted">{{ i.summary }}</div>{% if i.note %}<div class="small">{{ i.note }}</div>{% endif %}</td>
+{% if can('analyse') %}
+<td colspan="3"><form class="inline-row" method="post">{{ csrf() }}<input type="hidden" name="id" value="{{ i.id }}">
+  <input type="text" name="assignee" value="{{ i.assignee }}" list="people" maxlength="64" aria-label="Assigned to" class="w-sm">
+  <input type="date" name="due" value="{{ i.due or '' }}" aria-label="Due date">
+  <select name="status" aria-label="Status">{% for key, label in statuses %}{% if key in manual or key == i.status %}<option value="{{ key }}" {{ 'selected' if key == i.status }}>{{ label }}</option>{% endif %}{% endfor %}</select>
+  <input type="text" name="note" value="{{ i.note }}" maxlength="500" placeholder="note" aria-label="Note" class="w-sm">
+  {% if i.overdue %}<span class="badge HIGH">overdue</span>{% endif %}<button class="btn small secondary">Save</button></form></td>
+<td class="nowrap muted">{{ i.age if i.age is not none else "-" }} d</td><td></td>
+{% else %}
+<td>{{ i.assignee or "-" }}</td><td class="nowrap">{{ i.due or "-" }}{% if i.overdue %} <span class="badge HIGH">overdue</span>{% endif %}</td><td>{{ dict(statuses)[i.status] }}</td><td class="nowrap muted">{{ i.age if i.age is not none else "-" }} d</td>
+{% endif %}
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty section">Nothing to show.</div>{% endif %}
+{% endblock %}

@@ -1,14 +1,28 @@
 # PyFRC2G-Web - the code is mounted from this repository (read-only volumes): ./pyfrc2g_web
 # for the web application and ../engine/pyfrc2g for the engine.
+#
+# Three services start together:
+#   redis        sign-in counters and, with SSO, the sessions: internal network only, password, restricted ACL
+#   pyfrc2g-web  the application: not reachable from the network, only through nginx
+#   nginx        the only way in: HTTPS on 443 (HTTP on 80 redirects to it), request limits
+#
+# Prerequisites (see README): a certificate in ./nginx/certs (fullchain.pem and privkey.pem) and the password of
+# Redis in .env (PYFRC2G_REDIS_PASSWORD). Then open https://<PYFRC2G_SERVER_NAME>/ (default https://localhost/).
 
 services:
   pyfrc2g-web:
     build: .
     image: pyfrc2g-web:runtime
     restart: unless-stopped
+    # Reachable on this machine only (monitoring: http://127.0.0.1:8080/metrics with the token); users go through nginx.
     ports:
       - "127.0.0.1:8080:8080"
     env_file: .env
+    environment:  # Set here: they are what the installation is made of, not choices.
+      PYFRC2G_WEB_PROXY: "1"
+      PYFRC2G_WEB_SECURE_COOKIES: "1"
+      PYFRC2G_REDIS_URL: redis://pyfrc2g@redis:6379/0
+      PYFRC2G_REDIS_PASSWORD: ${PYFRC2G_REDIS_PASSWORD:?set PYFRC2G_REDIS_PASSWORD in .env, see the README Prerequisites}
     # Hardening: read-only root filesystem, no privileges (writes go to the volume and /tmp).
     read_only: true
     tmpfs:
@@ -21,23 +35,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-        required: false  # Only when the "redis" profile is enabled.
     volumes:
       - pyfrc2g-data:/data
       - ./pyfrc2g_web:/app/pyfrc2g-web/pyfrc2g_web:ro,z
       - ../engine/pyfrc2g:/app/pyfrc2g/pyfrc2g:ro,z
 
-  # Optional HTTPS reverse proxy in front of the application (nginx, TLS termination, request limits).
-  # Enable it with, in .env:
-  #   COMPOSE_PROFILES=proxy            (or proxy,redis)
-  #   PYFRC2G_SERVER_NAME=pyfrc2g.example.com
-  #   PYFRC2G_WEB_PROXY=1               (the application trusts one proxy hop)
-  #   PYFRC2G_WEB_SECURE_COOKIES=1
-  # and put the certificate in ./nginx/certs/fullchain.pem and privkey.pem (./nginx/self-signed.sh makes a test one).
-  # Then use https://<name>/ ; the application itself stays reachable on 127.0.0.1:8080 only.
   nginx:
     image: nginxinc/nginx-unprivileged:1.27-alpine
-    profiles: [proxy]
     restart: unless-stopped
     ports:
       - "${PYFRC2G_HTTP_PORT:-80}:8080"
@@ -69,29 +73,24 @@ services:
     mem_limit: 256m
     pids_limit: 100
 
-  # Optional session store (OIDC sign-in). Enable it with, in .env:
-  #   COMPOSE_PROFILES=redis
-  #   PYFRC2G_REDIS_URL=redis://pyfrc2g@redis:6379/0
-  #   PYFRC2G_REDIS_PASSWORD=<long random value>
-  # Reachable only from the web container (internal network, no published port), authenticated, the
-  # "default" user disabled, a single ACL user limited to session:* and throttle:* keys without admin / dangerous
-  # commands (no CONFIG, FLUSHALL, KEYS, DEBUG...), nothing written to disk.
+  # Reachable only from the web container (internal network, no published port), authenticated with
+  # PYFRC2G_REDIS_PASSWORD, the "default" user disabled, a single ACL user limited to session:* and throttle:* keys
+  # without admin / dangerous commands (no CONFIG, FLUSHALL, KEYS, DEBUG...), nothing written to disk.
   redis:
     image: redis:7.4-alpine
-    profiles: [redis]
     restart: unless-stopped
     user: "999"
     networks: [sessions]
     environment:
-      REDIS_PASSWORD: ${PYFRC2G_REDIS_PASSWORD:-}
-      REDISCLI_AUTH: ${PYFRC2G_REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${PYFRC2G_REDIS_PASSWORD:?set PYFRC2G_REDIS_PASSWORD in .env, see the README Prerequisites}
+      REDISCLI_AUTH: ${PYFRC2G_REDIS_PASSWORD}
     command:
       - sh
       - -c
       - >-
-        [ -n "$$REDIS_PASSWORD" ] || { echo "set PYFRC2G_REDIS_PASSWORD in .env" >&2; exit 1; };
         exec redis-server --save "" --appendonly no --maxmemory 128mb --maxmemory-policy volatile-lru
-        --user default off --user pyfrc2g on ">$$REDIS_PASSWORD" "~session:*" "~throttle:*" +@all -@admin -@dangerous
+        --user default off --user pyfrc2g on ">$$REDIS_PASSWORD" "~session:*" "~throttle:*"
+        +@all -@admin -@dangerous
     healthcheck:
       test: ["CMD-SHELL", "redis-cli --user pyfrc2g ping | grep -q PONG"]
       interval: 10s

@@ -72,7 +72,7 @@ def create_app(data_dir=None, start_workers=True):
     from pyfrc2g import __version__ as engine_version
     from werkzeug.middleware.proxy_fix import ProxyFix
 
-    from pyfrc2g_web import access, audit, charts, filters, notify, oidc, redisutil, security
+    from pyfrc2g_web import access, audit, charts, filters, loginguard, notify, oidc, redisutil, security
     from pyfrc2g_web.admin import bp as admin_bp
     from pyfrc2g_web.api import bp as api_bp
     from pyfrc2g_web.jobs import Runner, Scheduler
@@ -87,6 +87,7 @@ def create_app(data_dir=None, start_workers=True):
     redis_client = redisutil.connect(redis_settings) if redis_settings else None
     app.redis = redis_client
     app.throttle = security.Throttle(redis_client)  # Shared by the instances when Redis is configured.
+    app.guard = loginguard.LoginGuard(app)  # Progressive locks of the sign-in (see loginguard.py).
     audit.install(app.db)  # Forward events to syslog / webhook (PYFRC2G_AUDIT_*).
     notify.install(app.db, start=start_workers)  # Alerts and scheduled reports by e-mail (PYFRC2G_SMTP_*).
     app.runner = app.scheduler = None
@@ -104,6 +105,9 @@ def create_app(data_dir=None, start_workers=True):
         SESSION_COOKIE_SECURE=os.environ.get("PYFRC2G_WEB_SECURE_COOKIES", "").lower() in ("1", "true", "yes"),
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
         MAX_SESSIONS=max(0, int(os.environ.get("PYFRC2G_MAX_SESSIONS", "0") or 0)),  # per user, 0 = no limit
+        LOGIN_MAX_FAILURES=max(3, int(os.environ.get("PYFRC2G_LOGIN_MAX_FAILURES", "5") or 5)),
+        LOGIN_LOCK_MINUTES=max(1, int(os.environ.get("PYFRC2G_LOGIN_LOCK_MINUTES", "10") or 10)),
+        LOGIN_MAX_LOCK_HOURS=max(1, int(os.environ.get("PYFRC2G_LOGIN_MAX_LOCK_HOURS", "24") or 24)),
         OIDC_TOKEN_IDLE_DAYS=max(1, int(os.environ.get("PYFRC2G_OIDC_TOKEN_IDLE_DAYS", "30") or 30)),
         OIDC_REVALIDATE_MINUTES=max(5, int(os.environ.get("PYFRC2G_OIDC_REVALIDATE_MINUTES", "60") or 60)),
         RISK_FOUR_EYES=os.environ.get("PYFRC2G_RISK_FOUR_EYES", "").lower() in ("1", "true", "yes"),

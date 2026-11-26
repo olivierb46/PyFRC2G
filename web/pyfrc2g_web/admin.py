@@ -368,10 +368,12 @@ def users():
             flash(f"User {username} created.", "ok")
         return redirect(url_for("admin.users"))
     users_list = db().users()
+    failed = db().failed_signins()
     for u in users_list:
         u["scope_view"] = access.scope_text(access.parse_scope(u["scope"])) if u["role"] != "admin" else ""
         u["restricted"] = u["role"] != "admin" and bool(u["scope"])
         u["sessions"] = len(db().sessions(u["id"]))
+        u["failed"] = failed.get(u["username"].lower(), 0)
     return render_template("admin/users.html", users=users_list, roles=security.ROLES, role_help=security.ROLE_HELP,
                            group_scopes=access.group_scopes_text(db().settings().get("group_scopes")))
 
@@ -427,6 +429,10 @@ def update_user(user_id):
             db().update_user(user_id, scope=scope)
             db().add_event(g.user["username"], "scope changed", f"{user['username']}: {access.describe(scope)}")
             flash(f"Scope of {user['username']}: {access.describe(scope)}.", "ok")
+    elif action == "unlock":
+        addresses = current_app.guard.unlock(user["username"])
+        db().add_event(g.user["username"], "sign-in unlocked", f"{user['username']} ({addresses} address(es))")
+        flash(f"Sign-in locks of {user['username']} cleared.", "ok")
     elif action == "mfa_reset":
         db().disable_totp(user_id)
         db().delete_user_api_tokens(user_id)  # Whoever lost the device may have lost more: tokens are renewed.

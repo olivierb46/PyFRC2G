@@ -282,6 +282,18 @@ upload files (that could create a firewall outside the scope) nor accept a risk 
 Administrators are never restricted; the event log and the accepted risks list are not filtered
 either (visible to admins and auditors).
 
+### Remediation, simulation, owners
+
+- **Remediation**: a finding can be assigned to somebody with a due date. It is then followed by the analyses:
+  gone from the findings = *fixed* (and the time to fix is measured), hidden by an accepted risk = *accepted*, back
+  again = *reopened*. Overdue items raise a daily event and appear in the weekly summary.
+- **Simulate a rule**: the engine audit is run on the stored rules with a proposed rule inserted at a given
+  position: new findings, findings that go away (a broad rule above another makes it redundant or shadowed) and the
+  score before and after. It is a preview of the rule base, not of the traffic: NAT, routing, the compliance policy
+  and the traffic counters are not simulated.
+- **Owners**: the firewalls, rules, findings and accepted risks of each owner, to prepare a review with the people
+  concerned.
+
 ### Rule review, cleanup, flow search, compliance
 
 - **Rule review**: a rule can have an owner, a ticket and a comment, and a review date; one not reviewed for the
@@ -392,13 +404,13 @@ and in Administration > CISO Assistant. The token is encrypted and never display
   is retried a few times, in the background.
 - **Backup**: Administration > Backup & keys downloads a consistent copy of the database,
   encrypted with a passphrase chosen at download (not stored). It is restored with the application
-  stopped (`pyfrc2g-web --restore-backup FILE`); both the passphrase **and** `PYFRC2G_SECRET_KEY` are
+  stopped (`--restore-backup FILE` in the container, see the web README); both the passphrase **and** `PYFRC2G_SECRET_KEY` are
   needed, since the content is also encrypted with the application key.
 - **Key rotation**: put the new key in `PYFRC2G_SECRET_KEY` and the previous one in
   `PYFRC2G_SECRET_KEY_OLD`, restart, click *Re-encrypt* (the page counts the values still using an old
   key), then remove the old key.
-- **Failed sign-ins** are throttled; with Redis (`PYFRC2G_REDIS_URL`) the counters are shared by all
-  instances, and so are the sessions with single sign-on.
+- **Failed sign-ins** are counted for each user name and address: a few lock that pair for a while (longer each time it comes back), an address failing on many names is locked as a whole, and a flood of failures on one account raises an alert without locking the real user out. An administrator can unlock a user. With Redis (`PYFRC2G_REDIS_URL`) the counters are
+  shared by all instances, and so are the sessions with single sign-on.
 - The number of analyses kept per firewall is limited (retention); the oldest ones, with their
   reports, are deleted.
 

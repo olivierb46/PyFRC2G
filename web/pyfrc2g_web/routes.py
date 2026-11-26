@@ -19,7 +19,7 @@ from flask import (
     url_for,
 )
 
-from pyfrc2g_web import access, api, security
+from pyfrc2g_web import access, api, remediation, security
 from pyfrc2g_web.security import admin_required, login_required, permission_required
 
 bp = Blueprint("main", __name__)
@@ -42,16 +42,16 @@ def db():
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
-    """Sign in with a local account (throttled per address and per user name)."""
+    """Sign in with a local account (progressive locks per user name and address, see loginguard.py)."""
     if g.user is not None:
         return redirect(url_for("main.dashboard"))
     error = None
     if request.method == "POST":
         username = request.form.get("username", "").strip()[:64]  # Bounded: it is stored and used as a key.
         address = request.remote_addr or "?"
-        throttle = current_app.throttle
-        if throttle.blocked(address, f"user:{username}"):
-            error = "Too many failed attempts: try again in 10 minutes."
+        guard = current_app.guard
+        if wait := guard.wait(username, address):
+            error = guard.message(wait)
         else:
             user = db().user(username=username)
             if security.check_password(user, request.form.get("password", "")):
@@ -61,21 +61,23 @@ def login():
                     session["mfa"] = {"uid": user["id"], "until": time.time() + MFA_WAIT,
                                       "next": request.args.get("next") or ""}
                     return redirect(url_for("main.login_mfa"))
-                throttle.reset(address, f"user:{username}")
+                guard.succeeded(username, address)
                 security.login_user(user)
                 db().touch_login(user["id"])
                 db().add_event(username, "sign-in", address)
                 return redirect(security.safe_next(request.args.get("next")))
-            throttle.fail(address, f"user:{username}")
+            locked = guard.failed(username, address)
             db().add_event(username or "?", "failed sign-in", address)
             logging.warning(f"web: failed sign-in for {username!r} from {address}")
-            error = "Invalid user name or password."
+            error = guard.message(locked) if locked else "Invalid user name or password."
     sso_url = None
     if "pyfrc2g_oidc" in current_app.extensions:
         from pyfrc2g_web.oidc import sso_login_url
 
         sso_url = sso_login_url(request.args.get("next"))
-    return render_template("login.html", error=error, no_users=db().count_users() == 0, sso_url=sso_url)
+    if error:
+        flash(error, "error")  # Shown as a popup with this page.
+    return render_template("login.html", no_users=db().count_users() == 0, sso_url=sso_url)
 
 
 @bp.route("/login/mfa", methods=["GET", "POST"])
@@ -95,10 +97,9 @@ def login_mfa():
         return redirect(url_for("main.login"))
     error = None
     if request.method == "POST":
-        address, throttle = request.remote_addr or "?", current_app.throttle
-        keys = (address, f"user:{user['username']}")
-        if throttle.blocked(*keys):
-            error = "Too many failed attempts: try again in 10 minutes."
+        address, guard = request.remote_addr or "?", current_app.guard
+        if wait := guard.wait(user["username"], address):
+            error = guard.message(wait)
         else:
             code, state = request.form.get("code", ""), db().mfa(user["id"])
             step = mfa.verify(state["secret"], code, state["last"]) if state["secret"] else None
@@ -108,16 +109,18 @@ def login_mfa():
                     left = [h for h in state["recovery"] if h != recovery]
                     db().set_recovery(user["id"], left)
                     db().add_event(user["username"], "recovery code used", f"{len(left)} left")
-                throttle.reset(*keys)
+                guard.succeeded(user["username"], address)
                 session.pop("mfa", None)
                 security.login_user(user)
                 db().touch_login(user["id"])
                 db().add_event(user["username"], "sign-in", f"{address} (MFA)")
                 return redirect(security.safe_next(pending.get("next")))
-            throttle.fail(*keys)
+            locked = guard.failed(user["username"], address)
             db().add_event(user["username"], "failed sign-in", f"{address} (MFA)")
-            error = "Invalid code."
-    return render_template("login_mfa.html", error=error)
+            error = guard.message(locked) if locked else "Invalid code."
+    if error:
+        flash(error, "error")
+    return render_template("login_mfa.html")
 
 
 @bp.route("/logout", methods=["POST"])
@@ -659,6 +662,95 @@ def export(fmt):
 
 
 # ---------------------------------------------------------------------------
+# Remediation of the findings
+# ---------------------------------------------------------------------------
+
+_DATE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clean_due(value):
+    """'' (no due date) or the date if it is a valid YYYY-MM-DD, else None."""
+    from datetime import date
+
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        return date.fromisoformat(value).isoformat() if _DATE.match(value) else None
+    except ValueError:
+        return None
+
+
+@bp.route("/firewalls/<name>/track", methods=["POST"])
+@permission_required("analyse")
+def track_finding(name):
+    """Assign a finding of the Audit tab to somebody, with a due date: it is followed until it disappears."""
+    from pyfrc2g_web import exceptions as accepted
+
+    gw = _gateway_or_404(name)
+    analysis = db().analysis(request.form.get("analysis_id", type=int) or 0)
+    if analysis is None or analysis["gateway_id"] != gw["id"]:
+        abort(404)
+    data = accepted.apply(analysis["data"], db().exceptions(), gw["name"])
+    index = request.form.get("finding", type=int)
+    due = _clean_due(request.form.get("due"))
+    if index is None or not 0 <= index < len(data["audit"]):
+        flash("Choose the finding to follow.", "error")
+    elif due is None:
+        flash("Due date: YYYY-MM-DD, or empty.", "error")
+    else:
+        finding = data["audit"][index]
+        assignee = request.form.get("assignee", "").strip()[:64] or g.user["username"]
+        key = remediation.finding_key(finding)
+        db().track_finding(gw["name"], key[0], key[1], finding.get("SEVERITY", ""), finding.get("RULE", "")[:300],
+                           assignee, due or None, request.form.get("note", "").strip()[:500], g.user["username"])
+        db().add_event(g.user["username"], "finding tracked", f"{gw['name']}: {key[0]} assigned to {assignee}")
+        flash(f"Finding assigned to {assignee}.", "ok")
+        return redirect(url_for("main.remediation_list"))
+    return redirect(url_for("main.gateway", name=name, tab="audit"))
+
+
+@bp.route("/remediation", methods=["GET", "POST"])
+@login_required
+def remediation_list():
+    """The findings that are being fixed: who, until when, and whether the analyses confirm the fix."""
+    visible = access.visible_names(db())
+    if request.method == "POST":
+        if not security.can("analyse"):
+            abort(403)
+        item = db().remediation(request.form.get("id", type=int) or 0)
+        if item is None or item["gateway"] not in visible:
+            abort(404)
+        due, status = _clean_due(request.form.get("due")), request.form.get("status", "")
+        allowed = remediation.MANUAL + (item["status"],)  # A fixed item stays fixed unless a person reopens it.
+        if due is None or status not in allowed:
+            flash("Check the due date (YYYY-MM-DD) and the status.", "error")
+        else:
+            db().update_remediation(item["id"], assignee=request.form.get("assignee", "").strip()[:64], due=due,
+                                    status=status if status != item["status"] else None,
+                                    note=request.form.get("note", "").strip()[:500])
+            db().add_event(g.user["username"], "remediation updated", f"{item['gateway']}: {item['check_name']}")
+            flash("Saved.", "ok")
+        return redirect(url_for("main.remediation_list", **{k: v for k, v in request.args.items()}))
+    items = [i for i in db().remediations() if i["gateway"] in visible]
+    overall = remediation.stats(items)
+    status, assignee = request.args.get("status", "active"), request.args.get("assignee", "").strip()
+    firewall = request.args.get("firewall", "")
+    wanted = (g.user["username"] if assignee == "me" else assignee).lower()
+    shown = [i for i in items
+             if (status == "all" or (status == "active" and i["status"] in remediation.ACTIVE) or i["status"] == status)
+             and (not assignee or i["assignee"].lower() == wanted)
+             and (not firewall or i["gateway"] == firewall)
+             and (not request.args.get("overdue") or remediation.is_overdue(i))]
+    for item in shown:
+        item["overdue"], item["age"] = remediation.is_overdue(item), remediation.days_open(item)
+    return render_template("remediation.html", items=shown, overall=overall, statuses=remediation.STATUSES,
+                           manual=remediation.MANUAL, status=status, assignee=assignee, firewall=firewall,
+                           firewalls=sorted({i["gateway"] for i in items}),
+                           people=sorted({u["username"] for u in db().users()}))
+
+
+# ---------------------------------------------------------------------------
 # Rule review, cleanup plan, flow search, compliance
 # ---------------------------------------------------------------------------
 
@@ -766,6 +858,51 @@ def flows():
                            f"{form['port'][:30] or 'any'}")
     return render_template("flows.html", gateways=gateways, form=form, results=results, error=error,
                            protocols=flow_search.PROTOCOLS)
+
+
+@bp.route("/simulate")
+@login_required
+def simulate_rule():
+    """What if this rule was added to a firewall? The audit of the stored rules, before and after."""
+    from pyfrc2g_web import flows as flow_search
+    from pyfrc2g_web import simulate
+
+    gateways = access.visible_gateways(db())
+    names = ("firewall", "interface", "action", "source", "destination", "protocol", "port", "position", "comment")
+    form = {key: request.args.get(key, "").strip() for key in names}
+    form["action"] = form["action"] or "pass"
+    gw = next((x for x in gateways if x["name"] == form["firewall"]), None)
+    data = _latest_data(gw) if gw else None
+    choices = simulate.interfaces(data) if data else []
+    result, error = None, ""
+    if request.args.get("run") and data:
+        position = int(form["position"]) if form["position"].isascii() and form["position"].isdigit() else None
+        try:
+            result = simulate.run(data, db().settings(), form["interface"], form, position)
+        except (simulate.SimulationError, flow_search.FlowError) as e:
+            error = str(e)
+        else:
+            db().add_event(g.user["username"], "rule simulated",
+                           f"{gw['name']}: {form['action']} {form['source'][:40]} -> {form['destination'][:40]}")
+    return render_template("simulate.html", gateways=gateways, form=form, gw=gw, choices=choices, result=result,
+                           error=error, protocols=flow_search.PROTOCOLS)
+
+
+@bp.route("/owners")
+@bp.route("/owners.csv", endpoint="owners_csv")
+@login_required
+def owners_view():
+    """Who is responsible for what: firewalls, rules, findings being fixed and accepted risks, per owner."""
+    from pyfrc2g_web import owners
+
+    _, gateways, sites, tags, site, tag = _filtered_gateways()
+    rows = owners.collect(db(), gateways, expiring_days=current_app.config.get("RISK_REMINDER_DAYS", 14))
+    if request.endpoint == "main.owners_csv":
+        db().add_event(g.user["username"], "export", "owners csv")
+        return Response(owners.to_csv(rows), mimetype="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="pyfrc2g-owners.csv"'})
+    return render_template("owners.html", rows=rows, sites=sites, tags=tags, site=site, tag=tag,
+                           no_owner=owners.NO_OWNER, months=int(db().settings().get("review_months") or 0))
 
 
 @bp.route("/compliance", methods=["GET", "POST"])

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Owners{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Owners</h1>
+<div class="sub">Who is in charge of what. An owner is a name typed in the firewall settings, in the rule review or in the follow-up of the findings.
+Rules without an owner are listed on their own line.</div></div>
+<div class="actions"><a class="btn secondary" href="{{ url_for('main.owners_csv', site=site, tag=tag) }}">Download CSV</a></div></div>
+{% if sites or tags %}<form class="filters-bar card" method="get">
+  {% if sites %}<label for="f-site">Site</label><select id="f-site" name="site" data-autosubmit><option value="">All</option>{% for s in sites %}<option {{ 'selected' if s == site }}>{{ s }}</option>{% endfor %}</select>{% endif %}
+  {% if tags %}<label for="f-tag">Tag</label><select id="f-tag" name="tag" data-autosubmit><option value="">All</option>{% for t in tags %}<option {{ 'selected' if t == tag }}>{{ t }}</option>{% endfor %}</select>{% endif %}
+</form>{% endif %}
+{% if rows %}
+<div class="table-wrap section"><table><thead><tr><th>Owner</th><th>Firewalls</th><th>Rules owned</th><th>Rules to review{% if not months %} <span class="muted">(review off)</span>{% endif %}</th><th>Findings to fix</th><th>Overdue</th><th>Fixed</th><th>Accepted risks</th></tr></thead><tbody>
+{% for r in rows %}<tr{% if r.owner == no_owner %} class="muted"{% endif %}>
+<td><b>{% if r.owner != no_owner %}<a href="{{ url_for('main.remediation_list', assignee=r.owner, status='all') }}">{{ r.owner }}</a>{% else %}{{ r.owner }}{% endif %}</b></td>
+<td class="small">{% for n in r.firewalls[:6] %}<a href="{{ url_for('main.gateway', name=n) }}">{{ n }}</a>{{ ", " if not loop.last }}{% endfor %}{% if r.firewalls|length > 6 %} +{{ r.firewalls|length - 6 }}{% endif %}</td>
+<td>{{ r.rules }}</td>
+<td>{% if r.to_review %}<span class="badge MEDIUM">{{ r.to_review }}</span>{% else %}0{% endif %}</td>
+<td>{{ r.todo }}</td>
+<td>{% if r.overdue %}<span class="badge HIGH">{{ r.overdue }}</span>{% else %}0{% endif %}</td>
+<td>{{ r.fixed }}</td>
+<td>{{ r.risks }}{% if r.expiring %} <span class="badge MEDIUM" title="expiring soon">{{ r.expiring }} expiring</span>{% endif %}</td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty section">No owner yet: set an owner in the settings of a firewall, in the rule review or when assigning a finding.</div>{% endif %}
+{% endblock %}

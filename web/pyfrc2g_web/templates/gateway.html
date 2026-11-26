@@ -83,6 +83,19 @@
   <div class="form-actions"><button class="btn">{{ "Accept this risk" if can("approve_risk") else "Propose this risk for approval" }}</button></div>
 </form></details>
 {% endif %}
+{% if can('analyse') and data.audit %}
+<details class="card section"><summary><b>Assign a finding</b> <span class="muted">(somebody fixes it by a date; the next analyses confirm the fix)</span></summary>
+<form method="post" action="{{ url_for('main.track_finding', name=gw.name) }}">{{ csrf() }}<input type="hidden" name="analysis_id" value="{{ analysis.id }}">
+  <label for="trk-finding">Finding</label>
+  <select id="trk-finding" name="finding">{% for f in data.audit %}<option value="{{ loop.index0 }}">{{ f.SEVERITY }} · {{ f.CHECK }} · #{{ f["RULE ORDER"] }} {{ f.GATEWAY }} · {{ f.RULE[:90] }}</option>{% endfor %}</select>
+  <div class="grid cols-2">
+    <div><label for="trk-assignee">Assigned to <span class="muted">(empty = you)</span></label><input type="text" id="trk-assignee" name="assignee" maxlength="64" list="trk-people"></div>
+    <div><label for="trk-due">Due date <span class="muted">(optional)</span></label><input type="date" id="trk-due" name="due"></div>
+  </div>
+  <label for="trk-note">Note <span class="muted">(optional)</span></label><input type="text" id="trk-note" name="note" maxlength="500">
+  <div class="form-actions"><button class="btn">Assign</button> <a class="btn secondary" href="{{ url_for('main.remediation_list') }}">Follow-up</a></div>
+</form></details>
+{% endif %}
 {% if data.accepted %}
 <div class="section"><h2>Accepted risks <span class="muted small">({{ data.accepted|length }})</span></h2>
 {% call(field, value) data_table("accepted", ["SEVERITY", "CHECK", "RULE", "REASON", "OWNER", "EXPIRES"], data.accepted) %}{% if field == "SEVERITY" %}{{ badge(value) }}{% elif field == "EXPIRES" %}{{ value or "never" }}{% else %}{{ value }}{% endif %}{% endcall %}

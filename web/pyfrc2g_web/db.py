@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT NOT NULL, prefix TEXT,
     token_hash TEXT UNIQUE NOT NULL, created TEXT, last_used TEXT, expires TEXT);
 CREATE INDEX IF NOT EXISTS api_tokens_user ON api_tokens(user_id);
+CREATE TABLE IF NOT EXISTS remediations (
+    id INTEGER PRIMARY KEY, gateway TEXT NOT NULL, check_name TEXT NOT NULL, rule_key TEXT NOT NULL,
+    severity TEXT, summary_enc BLOB, assignee TEXT, due TEXT, status TEXT NOT NULL DEFAULT 'open', note_enc BLOB,
+    created TEXT, created_by TEXT, updated TEXT, fixed TEXT, UNIQUE (gateway, check_name, rule_key));
 """
 # users table of the first releases: role restricted to ('admin', 'viewer') by a CHECK constraint.
 USERS_V2 = ("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, "
@@ -250,6 +254,14 @@ class Database:
                 self.on_event(record)
             except Exception:  # An unreachable SIEM must never break the application.
                 logging.exception("audit export failed")
+
+    def failed_signins(self, since_minutes=60):
+        """{lower-case user name: number of failed sign-ins} in the last minutes."""
+        cutoff = datetime.fromtimestamp(time.time() - since_minutes * 60).strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn() as c:
+            rows = c.execute("SELECT lower(username), COUNT(*) FROM events WHERE action='failed sign-in' AND time >= ? "
+                             "GROUP BY lower(username)", (cutoff,)).fetchall()
+        return {name: count for name, count in rows}
 
     def events(self, limit=300):
         with self._conn() as c:
@@ -576,6 +588,55 @@ class Database:
                               (today, username, gateway, key))
                 c.execute("UPDATE rule_notes SET updated=?, username=? WHERE gateway=? AND rule_key=?",
                           (now(), username, gateway, key))
+
+    # ------------------------------------------------------------------ remediation of findings
+
+    def _remediation(self, row):
+        item = dict(row)
+        blob, note = item.pop("summary_enc"), item.pop("note_enc")
+        item["summary"] = self.cipher.decrypt(blob).decode() if blob else ""
+        item["note"] = self.cipher.decrypt(note).decode() if note else ""
+        return item
+
+    def remediations(self, gateways=None):
+        """Every tracked finding (of the given firewall names, or all), newest first."""
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM remediations ORDER BY id DESC").fetchall()
+        items = [self._remediation(r) for r in rows]
+        return items if gateways is None else [i for i in items if i["gateway"] in set(gateways)]
+
+    def remediation(self, remediation_id):
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM remediations WHERE id=?", (remediation_id,)).fetchone()
+        return self._remediation(row) if row else None
+
+    def track_finding(self, gateway, check, rule_key, severity, summary, assignee, due, note, username):
+        """Start tracking a finding (or reopen it when it was already tracked). Return its id."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO remediations (gateway, check_name, rule_key, severity, summary_enc, assignee, due, "
+                "note_enc, created, created_by, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(gateway, check_name, rule_key) DO UPDATE SET severity=excluded.severity, "
+                "summary_enc=excluded.summary_enc, assignee=excluded.assignee, due=excluded.due, "
+                "note_enc=excluded.note_enc, status='open', fixed=NULL, updated=excluded.updated",
+                (gateway, check, rule_key, severity, self.cipher.encrypt(summary), assignee, due,
+                 self.cipher.encrypt(note) if note else None, now(), username, now()))
+            return c.execute("SELECT id FROM remediations WHERE gateway=? AND check_name=? AND rule_key=?",
+                             (gateway, check, rule_key)).fetchone()[0]
+
+    def update_remediation(self, remediation_id, assignee=None, due=None, status=None, note=None, fixed=None):
+        """Change the given fields (None = unchanged; '' empties the assignee, the due date or the note)."""
+        with self._conn() as c:
+            if assignee is not None:
+                c.execute("UPDATE remediations SET assignee=? WHERE id=?", (assignee, remediation_id))
+            if due is not None:
+                c.execute("UPDATE remediations SET due=? WHERE id=?", (due or None, remediation_id))
+            if note is not None:
+                c.execute("UPDATE remediations SET note_enc=? WHERE id=?",
+                          (self.cipher.encrypt(note) if note else None, remediation_id))
+            if status is not None:
+                c.execute("UPDATE remediations SET status=?, fixed=? WHERE id=?", (status, fixed, remediation_id))
+            c.execute("UPDATE remediations SET updated=? WHERE id=?", (now(), remediation_id))
 
     # ------------------------------------------------------------------ API tokens
 

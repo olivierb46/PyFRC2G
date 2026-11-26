@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge %}
+{% block title %}Simulate a rule{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Simulate a rule</h1>
+<div class="sub">Add a rule to the stored rules of a firewall and see what the audit says about the result. Nothing is sent to the firewall.</div></div></div>
+<form class="card" method="get">
+  <div class="grid cols-3">
+    <div><label for="s-fw">Firewall</label><select id="s-fw" name="firewall" data-autosubmit><option value="">Choose…</option>{% for g in gateways %}<option {{ 'selected' if g.name == form.firewall }}>{{ g.name }}</option>{% endfor %}</select></div>
+    <div><label for="s-if">Interface</label><select id="s-if" name="interface" {{ 'disabled' if not choices }}>{% for name, group in choices %}<option {{ 'selected' if name == form.interface }}>{{ name }}</option>{% endfor %}</select></div>
+    <div><label for="s-pos">Position <span class="muted">(empty = last)</span></label><input type="number" id="s-pos" name="position" min="1" value="{{ form.position }}" class="w-sm"></div>
+    <div><label for="s-act">Action</label><select id="s-act" name="action">{% for a in ("pass", "block", "reject") %}<option {{ 'selected' if a == form.action }}>{{ a }}</option>{% endfor %}</select></div>
+    <div><label for="s-src">Source</label><input type="text" id="s-src" name="source" value="{{ form.source }}" maxlength="200" placeholder="any, 10.0.0.0/24 or an alias"></div>
+    <div><label for="s-dst">Destination</label><input type="text" id="s-dst" name="destination" value="{{ form.destination }}" maxlength="200" placeholder="192.168.1.10 or an alias"></div>
+    <div><label for="s-pro">Protocol</label><select id="s-pro" name="protocol">{% for p in protocols %}<option value="{{ p }}" {{ 'selected' if p == (form.protocol or 'any') }}>{{ p }}</option>{% endfor %}</select></div>
+    <div><label for="s-prt">Port</label><input type="text" id="s-prt" name="port" value="{{ form.port }}" maxlength="200" placeholder="443, 8000-8100 (empty = any)"></div>
+    <div><label for="s-com">Description</label><input type="text" id="s-com" name="comment" value="{{ form.comment }}" maxlength="200"></div>
+  </div>
+  <div class="form-actions"><button class="btn" name="run" value="1" {{ 'disabled' if not choices }}>Simulate</button></div>
+  <div class="help">The audit of the engine is run on the stored rules with the rule inserted. The compliance policy and the traffic counters (unused rules) are not part of it, so the scores can differ from the one of the analysis: compare the two scores of the result, not with the dashboard. NAT and routing are not simulated.</div>
+</form>
+{% if error %}<div class="flash error section">{{ error }}</div>{% endif %}
+{% if result %}
+{% if result.warning %}<div class="flash error section">{{ result.warning }}</div>{% endif %}
+<div class="card section"><h2>Result for {{ gw.name }}</h2>
+  <div class="stat-row"><span>Rule inserted at position <b>{{ result.order }}</b> of {{ form.interface }}</span>
+    <span>Risk score of the rule checks <b>{{ result.score_before }}</b> → <b>{{ result.score_after }}</b>
+    {% set delta = result.score_after - result.score_before %}{% if delta > 0 %}<span class="badge HIGH">+{{ delta }}</span>{% elif delta < 0 %}<span class="badge ok">{{ delta }}</span>{% else %}<span class="badge">no change</span>{% endif %}</span></div>
+</div>
+<div class="section"><h2>New findings <span class="muted small">({{ result.new|length }})</span></h2>
+{% if result.new %}<div class="table-wrap"><table><thead><tr><th>Severity</th><th>Check</th><th>Rule</th><th>Detail</th></tr></thead><tbody>
+{% for f in result.new %}<tr><td>{{ badge(f.SEVERITY) }}</td><td><b>{{ f.CHECK }}</b></td><td class="small">{{ "the proposed rule" if f["RULE ID"] == "(proposed)" or f["RULE ID"] == "(proposed rule)" else f.RULE }}</td><td class="small">{{ f.DETAIL }}</td></tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="card empty">The rule raises no finding and changes none.</div>{% endif %}</div>
+{% if result.gone %}<div class="section"><h2>Findings that go away <span class="muted small">({{ result.gone|length }})</span></h2>
+<div class="table-wrap"><table><thead><tr><th>Severity</th><th>Check</th><th>Rule</th><th>Detail</th></tr></thead><tbody>
+{% for f in result.gone %}<tr><td>{{ badge(f.SEVERITY) }}</td><td><b>{{ f.CHECK }}</b></td><td class="small">{{ f.RULE }}</td><td class="small">{{ f.DETAIL }}</td></tr>{% endfor %}</tbody></table></div></div>{% endif %}
+{% endif %}
+{% endblock %}

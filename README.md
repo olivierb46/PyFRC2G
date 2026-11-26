@@ -41,11 +41,11 @@ Docker image of the command line: see [`engine/Dockerfile`](engine/Dockerfile).
 ```bash
 git clone https://github.com/olivierb46/PyFRC2G.git
 cd PyFRC2G/web
-cp .env.example .env                 # PYFRC2G_SECRET_KEY, PYFRC2G_ADMIN_USER / PYFRC2G_ADMIN_PASSWORD
-docker compose up -d --build         # http://localhost:8080
+cp .env.example .env                 # set PYFRC2G_REDIS_PASSWORD; put the TLS certificate in nginx/certs/
+docker compose up -d --build         # https://localhost/ (nginx and Redis start with it)
 ```
 
-Without Docker, from the repository root: `pip install ./engine ./web`, then `pyfrc2g-web`.
+The web application runs with Docker only (prerequisites: a TLS certificate and a Redis password, see [`web/README.md`](web/README.md)); the engine and its command line also install with `pip` (above).
 
 ## 📄 License
 

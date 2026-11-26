@@ -19,11 +19,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 requires-python = ">=3.9"
-# The PyFRC2G engine is in ../engine (not on PyPI): install both in one command,
-#   pip install ./engine ./web          (from the repository root)
-# or from GitHub:
-#   pip install "pyfrc2g @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=engine" \
-#               "pyfrc2g-web @ git+https://github.com/olivierb46/PyFRC2G.git@v2.3.0#subdirectory=web"
+# The web application is run with Docker (see README.md); this file describes the package the image mounts.
+# The PyFRC2G engine is in ../engine (not on PyPI).
 dependencies = [
     "pyfrc2g>=2.3.0",
     "flask>=2.2",

@@ -53,9 +53,12 @@
       {{ nav('main.uploads', 'Configuration files', 'upload') }}
       {{ nav('main.runs', 'Analyses', 'runs', 'main.run') }}
       {{ nav('main.compare', 'Compare', 'compare') }}
+      {{ nav('main.remediation_list', 'Remediation', 'accepted') }}
       {{ nav('main.trends', 'Trends', 'trends') }}
       {{ nav('main.flows', 'Flow search', 'flows') }}
+      {{ nav('main.simulate_rule', 'Simulate a rule', 'flows') }}
       {{ nav('main.compliance', 'Compliance', 'compliance') }}
+      {{ nav('main.owners_view', 'Owners', 'users') }}
       {% if can('manage') %}
       {% call group('admin', 'Administration', 'settings', ['admin.firewall', 'admin.settings', 'admin.polic', 'admin.ciso', 'admin.notif']) %}
       {{ nav('admin.firewalls', 'API firewalls', 'firewall', 'admin.firewall') }}
@@ -87,13 +90,17 @@
     </div>
   </aside>
   <main class="main">
-    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}
-    <div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
     {% block content %}{% endblock %}
     <p class="muted small footer">PyFRC2G-Web {{ version }} · engine PyFRC2G {{ engine_version }} · data encrypted at rest</p>
   </main>
 </div>
 {% else %}{% block public %}{% endblock %}{% endif %}
+{#- The messages of the application (flash) are shown as popups by toast.js. They are data (tojson escapes < > & '),
+    not script; without JavaScript they are listed in the page. -#}
+{% set flashed = get_flashed_messages(with_categories=true) %}
+{% if flashed %}<script type="application/json" id="toast-data">{{ flashed|tojson }}</script>
+<noscript><div class="toasts static">{% for category, message in flashed %}<div class="toast {{ category }}"><div class="toast-msg">{{ message }}</div></div>{% endfor %}</div></noscript>{% endif %}
+<script src="{{ url_for('static', filename='toast.js') }}?v={{ version }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}?v={{ version }}"></script>
 </body>
 </html>

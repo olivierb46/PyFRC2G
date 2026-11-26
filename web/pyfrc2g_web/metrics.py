@@ -60,6 +60,14 @@ def render(db, version, now=None):
         counts[run["status"]] = counts.get(run["status"], 0) + 1
     for status, count in sorted(counts.items()):
         out.append(_line("pyfrc2g_runs", count, status=status))
+    from pyfrc2g_web import remediation
+
+    tracked = db.remediations()
+    family("pyfrc2g_remediations", "gauge", "Findings followed up, by status.")
+    for status, count in sorted(remediation.stats(tracked)["counts"].items()):
+        out.append(_line("pyfrc2g_remediations", count, status=status))
+    family("pyfrc2g_remediations_overdue", "gauge", "Findings being fixed whose due date has passed.")
+    out.append(_line("pyfrc2g_remediations_overdue", remediation.stats(tracked)["overdue"]))
     family("pyfrc2g_sessions", "gauge", "Active user sessions.")
     out.append(_line("pyfrc2g_sessions", len(db.sessions())))
     family("pyfrc2g_accepted_risks", "gauge", "Accepted risks by approval status.")

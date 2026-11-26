@@ -61,6 +61,7 @@ class Throttle:
 
     def __init__(self, redis_client=None):
         self.failures = {}
+        self.counts, self.locks, self.strikes, self.tallies = {}, {}, {}, {}  # Local copies of the progressive locks.
         self.lock = threading.Lock()
         self.redis = redis_client
 
@@ -109,6 +110,104 @@ class Throttle:
         with self.lock:
             for key in keys:
                 self.failures.pop(key, None)
+
+    # ------------------------------------------------------------------ progressive locks (sign-in)
+    # A key counts its failures in a window; reaching the limit locks it for base * 2**strikes seconds (up to
+    # cap), and each lock is one more strike, remembered for a day: whoever comes back is blocked for longer.
+
+    STRIKE_MEMORY = 86400
+
+    def lock_remaining(self, key):
+        """Seconds left before the key may try again (0 if it is not locked)."""
+        base = self._key(key)
+
+        def read(r):
+            return r.ttl(base + ":l")
+
+        ttl, ok = self._redis_call(read)
+        if ok:
+            return max(0, int(ttl or 0))
+        with self.lock:
+            return max(0, int(self.locks.get(key, 0) - time.time()))
+
+    def strike(self, key, limit, window, base_lock, cap):
+        """Count a failure of the key. Return the number of seconds it is now locked for (0: not locked)."""
+        base = self._key(key)
+
+        def count(r):
+            n = r.incr(base + ":n")
+            if n == 1:
+                r.expire(base + ":n", window)
+            if n < limit:
+                return 0
+            strikes = int(r.get(base + ":s") or 0)
+            seconds = int(min(base_lock * 2 ** strikes, cap))
+            pipe = r.pipeline()
+            pipe.set(base + ":l", 1, ex=seconds)
+            pipe.incr(base + ":s")
+            pipe.expire(base + ":s", self.STRIKE_MEMORY)
+            pipe.delete(base + ":n")
+            pipe.execute()
+            return seconds
+
+        seconds, ok = self._redis_call(count)
+        if ok:
+            return seconds
+        now = time.time()
+        with self.lock:
+            self._prune(now)
+            recent = [t for t in self.counts.get(key, []) if now - t < window] + [now]
+            if len(recent) < limit:
+                self.counts[key] = recent
+                return 0
+            strikes, expires = self.strikes.get(key, (0, 0))
+            strikes = strikes if expires > now else 0
+            seconds = int(min(base_lock * 2 ** strikes, cap))
+            self.locks[key] = now + seconds
+            self.strikes[key] = (strikes + 1, now + self.STRIKE_MEMORY)
+            self.counts.pop(key, None)
+            return seconds
+
+    def tally(self, key, window):
+        """Count one event of the key in the window and return how many there are (for the alerts)."""
+        base = self._key(key)
+
+        def count(r):
+            n = r.incr(base + ":c")
+            if n == 1:
+                r.expire(base + ":c", window)
+            return int(n)
+
+        n, ok = self._redis_call(count)
+        if ok:
+            return n
+        now = time.time()
+        with self.lock:
+            self._prune(now)
+            events = [t for t in self.tallies.get(key, []) if now - t < window] + [now]
+            self.tallies[key] = events
+            return len(events)
+
+    def forget(self, *keys):
+        """Clear the counters, the locks and the strikes of keys."""
+        def clear(r):
+            r.delete(*[self._key(k) + suffix for k in keys for suffix in (":n", ":l", ":s", ":c")])
+
+        self._redis_call(clear)
+        with self.lock:
+            for key in keys:
+                for store in (self.counts, self.locks, self.strikes, self.tallies):
+                    store.pop(key, None)
+
+    def _prune(self, now):
+        """Drop the expired entries of the local counters (called with the lock held, now and then)."""
+        if sum(map(len, (self.counts, self.locks, self.strikes, self.tallies))) < 5000:
+            return
+        for store, alive in ((self.locks, lambda v: v > now), (self.strikes, lambda v: v[1] > now),
+                             (self.counts, lambda v: bool(v) and now - v[-1] < 3600),
+                             (self.tallies, lambda v: bool(v) and now - v[-1] < 7200)):
+            for key in [k for k, v in store.items() if not alive(v)]:
+                del store[key]
 
 
 def _password_marker(password_hash):

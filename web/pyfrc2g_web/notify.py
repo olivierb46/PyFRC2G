@@ -56,7 +56,7 @@ KINDS = (("email", "Email"), ("webhook", "Webhook (signed JSON)"), ("slack", "Sl
 EVENTS = (("critical", "New critical finding"), ("high", "New high finding"),
           ("drift", "Risk score rise"), ("permissive", "New permissive rule (any)"),
           ("failed", "Analysis failed"), ("stale", "Analysis too old"),
-          ("window", "Change outside the maintenance window"))
+          ("window", "Change outside the maintenance window"), ("attack", "Account under attack (sign-in)"))
 SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 SLACK_HOSTS = ("hooks.slack.com",)
 TEAMS_SUFFIXES = (".webhook.office.com", ".logic.azure.com", ".powerplatform.com", ".office.com")
@@ -263,8 +263,8 @@ def alert_text(alert, detail, base_url=""):
     """Return (subject, text lines) of an alert; with detail=False only the counts are included."""
     name = clean(alert["firewall"], 80)
     labels = ", ".join(_label(e) for e in alert["events"])
-    subject = clean(f"[PyFRC2G] {name}: {labels}", 150)
-    lines = [f"Firewall: {name}", f"Events: {labels}"]
+    subject = clean(f"[PyFRC2G] {name}: {labels}" if name else f"[PyFRC2G] {labels}", 150)
+    lines = [f"Firewall: {name}", f"Events: {labels}"] if name else [f"Events: {labels}"]
     if alert.get("score_after") is not None:
         before = "?" if alert.get("score_before") is None else alert["score_before"]
         lines.append(f"Risk score: {before} -> {alert['score_after']}")
@@ -483,6 +483,14 @@ def check_window(db, host, data, text, labels=None, moment=None):
     return notifier.alert(alert, labels)
 
 
+def attack_alert(notifier, username, count):
+    """Queue the alert of an account that receives many failed sign-ins (for the channels subscribed to it)."""
+    alert = {"firewall": "", "events": ["attack"], "score_before": None, "score_after": None, "counts": {},
+             "note": f"{count} failed sign-ins on the account {clean(username, 40)} within an hour",
+             "findings": []}
+    return notifier.alert(alert)
+
+
 def analysis_alert(db, previous, data, host, labels=None):
     """Queue the alerts after the runner stored an analysis. Return the channel count; never raises."""
     notifier = getattr(db, "notifier", None)
@@ -688,6 +696,17 @@ def digest_lines(db, gateways, today=None, days=7):
         lines.append("Accepted risks expiring within 14 days:")
         lines += [f"  {clean(e['check_name'], 40)} on {clean(e.get('gateway') or 'all firewalls', 40)}: "
                   f"{e['expires']} ({left} day(s))" for e, left in soon[:10]]
+        lines.append("")
+    from pyfrc2g_web import remediation
+
+    names = {gw["name"] for gw in gateways}
+    tracked = [i for i in db.remediations() if i["gateway"] in names]
+    todo = [i for i in tracked if i["status"] in remediation.ACTIVE]
+    if todo:
+        late = [i for i in todo if remediation.is_overdue(i, today)]
+        lines.append(f"Findings being fixed: {len(todo)}, overdue: {len(late)}")
+        lines += [f"  {clean(i['gateway'], 40)}: {clean(i['check_name'], 40)} (due {i['due']}, "
+                  f"{clean(i['assignee'] or 'nobody', 40)})" for i in late[:10]]
         lines.append("")
     months = int(db.settings().get("review_months") or 0)
     if months:

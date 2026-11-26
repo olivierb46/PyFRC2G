@@ -265,3 +265,32 @@ input.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; widt
 input.toggle:checked { background: var(--accent); border-color: var(--accent); }
 input.toggle:checked::after { transform: translateX(16px); }
 input.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Popup messages (toast.js) */
+.toasts { position: fixed; top: 16px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 10px;
+  width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toasts.static { position: static; width: auto; margin: 12px; pointer-events: auto; }
+.toast { pointer-events: auto; position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px 15px;
+  border-radius: 10px; color: #fff; background: #1565c0; box-shadow: 0 6px 20px rgba(0, 0, 0, .28); overflow: hidden;
+  cursor: pointer; animation: toast-in .2s ease-out; }
+.toast.success, .toast.ok { background: #2e7d32; }
+.toast.error { background: #c62828; }
+.toast.warning { background: #f9a825; color: #1a1a1a; }
+.toast.info { background: #1565c0; }
+.toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-close { flex-shrink: 0; background: none; border: 0; padding: 0 2px; color: inherit; font: inherit; font-size: 20px;
+  line-height: 1; opacity: .8; cursor: pointer; }
+.toast-close:hover, .toast-close:focus-visible { opacity: 1; }
+.toast-bar { position: absolute; left: 0; bottom: 0; width: 100%; height: 3px; background: rgba(255, 255, 255, .6);
+  transform-origin: left; animation: toast-bar linear forwards; animation-duration: 5s; }
+.toast.warning .toast-bar { background: rgba(0, 0, 0, .4); animation-duration: 7s; }
+.toast.success .toast-bar, .toast.ok .toast-bar { animation-duration: 4s; }
+.toast.error .toast-bar { animation-duration: 9s; }  /* An error stays longer. */
+.toast:hover .toast-bar { animation-play-state: paused; }
+.toast.leaving { animation: toast-out .2s ease-in forwards; }
+.toasts.static .toast { animation: none; cursor: default; }
+.toasts.static .toast-bar { display: none; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(16px); } }
+@keyframes toast-bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }

@@ -445,6 +445,9 @@ def _analyse_one(state, run_id, work, loaded, kind, source_label, firewall_id=No
         before = db.analyses(gateway_id)
         previous = db.analysis(before[0]["id"])["data"] if before else None  # For the alerts (notify.py).
         analysis_id = db.add_analysis(gateway_id, run_id, data, artifacts)
+        from pyfrc2g_web import remediation
+
+        remediation.sync(db, host, data)  # Tracked findings that are gone are fixed, those that return reopen.
         if previous is not None and getattr(db, "notifier", None) is not None:
             from pyfrc2g_web import access, notify
 
@@ -776,5 +779,8 @@ class Scheduler:
             from pyfrc2g_web import review
 
             review.remind(self.db)
+            from pyfrc2g_web import remediation
+
+            remediation.remind(self.db)
         except Exception as e:
             logging.error(f"Reminder error: {e}")
